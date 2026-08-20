@@ -1,72 +1,64 @@
-# nirimon
+# mangomon
 
 Binary Cache:
 
 - Cache: <https://cache.ysun.co>
 - Key: `cache.ysun.co-1:WxPYwT5g3kt9XhUhHPpNLZKI9HIOsVVAuqSHpok8Qt4=`
 
-nirimon is a fork of [hyprmon](https://github.com/erans/hyprmon) (Eran Sandler,
-Apache 2.0) that's intended to only work for
-[Niri](https://github.com/niri-wm/niri) just like hyprmon is only build for
-Hyprland. All Hyprland specific code paths were stripped but the profile JSON
-format is preserved so all existing hyprmon profiles will still work if you copy
-`~/.config/hyprmon` to `~/.config/nirimon`. Read more info over at hyprmon's
-repository, the feature is basically the same.
+mangomon is a fork of [nirimon](https://github.com/stepbrobd/nirimon) (itself a
+fork of [hyprmon](https://github.com/erans/hyprmon) by Eran Sandler, Apache 2.0)
+that is intended to only work for [mango](https://github.com/mangowm/mango),
+just like nirimon is only built for Niri and hyprmon only for Hyprland. The Niri
+IPC layer is replaced by
+[wlr-output-management](https://wayland.app/protocols/wlr-output-management-unstable-v1),
+which mango implements and whose reference client `wlr-randr` mango's own docs
+recommend. The profile JSON format is preserved, so existing nirimon or hyprmon
+profiles keep working if you copy `~/.config/nirimon` (or `~/.config/hyprmon`)
+to `~/.config/mangomon`.
 
-Note that unlike hyprmon, niromon does not write to `~/.config/niri/config.kdl`
-or any other persistent Niri config file. Monitor application is via
-`niri msg output ...` calls, which are runtime-temporary. Niri reload (config
-edit, `niri msg action load-config-file`, or restart) reverts them. Persistence
-belongs to the profile json files in `~/.config/nirimon/profiles/`.
-
-<img width="1709" height="1392" alt="nirimon tui" src="https://github.com/user-attachments/assets/0d3f8475-6afe-48a5-b981-305cfd917b81" />
-
-<img width="1709" height="1392" alt="nirimon resolution and refresh rate menu" src="https://github.com/user-attachments/assets/4621f74f-ec57-4ca3-bc55-0036a85d9c9a" />
-
-<img width="1709" height="1392" alt="nirimon display settings" src="https://github.com/user-attachments/assets/ab494414-282d-43cb-af1d-4e99eab575fc" />
-
-<img width="1709" height="1392" alt="nirimon profile selection menu" src="https://github.com/user-attachments/assets/3853ca67-529e-45ad-bc07-e9145e79c944" />
-
-<img width="1709" height="1392" alt="nirimon cli" src="https://github.com/user-attachments/assets/8e6d7616-f625-40af-a127-15e207300a8c" />
+Note that mangomon does not write to your mango config file. Monitor application
+is one atomic `wlr-randr` invocation, which is runtime-temporary: a mango
+restart reverts outputs to whatever your `monitorrule` lines say. Persistence
+belongs to the profile json files in `~/.config/mangomon/profiles/`, applied at
+startup via `exec-once` (see the [Mango](#mango) section), or to `monitorrule`
+lines you write yourself.
 
 ## Installation
 
-To run nirimon in an ephemeral environment:
+To run mangomon in an ephemeral environment:
 
 ```sh
-nix run github:stepbrobd/nirimon
+nix run github:stepbrobd/mangomon
 ```
-
-Or for persistent installation, check how its packaged without `gomod2nix` in
-[my own configuration](https://github.com/stepbrobd/inc/blob/master/pkgs/nirimon/default.nix).
 
 Or if you are not using Nix/NixOS, build from source:
 
 ```sh
-git clone --depth=1 https://github.com/stepbrobd/nirimon
-pushd nirimon
+git clone --depth=1 https://github.com/stepbrobd/mangomon
+pushd mangomon
 go build -ldflags="-s -w -X main.Version=$(cat version.txt)"
-sudo mv nirimon /usr/local/bin/
+sudo mv mangomon /usr/local/bin/
 popd
 ```
 
 Or if you must:
 
 ```sh
-go install -ldflags="-s -w -X main.Version=0-unstable-$(date -u +%Y-%m-%d)+go" ysun.co/nirimon@latest
+go install -ldflags="-s -w -X main.Version=0-unstable-$(date -u +%Y-%m-%d)+go" ysun.co/mangomon@latest
 ```
+
+When building from source, `wlr-randr` is required and `wl-mirror` is optional
+(mirroring only); install both yourself. The Nix package wraps both in
+automatically.
 
 ## Usage
 
-Basically the same as hyprmon but a few features are stripped or not yet
-supported by Niri.
-
 ```sh
-nirimon                    # main TUI
-nirimon profiles           # profile selection menu
-nirimon -profile <profile> # apply a saved profile directly
-nirimon -list-profiles     # list profile names (active marked with *)
-nirimon -active-profile    # print the name of the currently matching profile
+mangomon                    # main TUI
+mangomon profiles           # profile selection menu
+mangomon -profile <profile> # apply a saved profile directly
+mangomon -list-profiles     # list profile names (active marked with *)
+mangomon -active-profile    # print the name of the currently matching profile
 ```
 
 ### Keyboard
@@ -85,7 +77,7 @@ Main UI:
 | M                 | Open mirror configuration (needs wl-mirror) |
 | C / D             | Open advanced display settings dialog       |
 | Enter / Space     | Toggle the selected monitor on/off          |
-| A                 | Apply the current layout to niri now        |
+| A                 | Apply the current layout to mango now       |
 | Z                 | Revert to previous configuration            |
 | O                 | Open the profiles page                      |
 | P                 | Save current layout as a named profile      |
@@ -103,25 +95,27 @@ Main UI:
 
 ### Profiles
 
-Profiles are json files in `~/.config/nirimon/profiles/`. They store the full
+Profiles are json files in `~/.config/mangomon/profiles/`. They store the full
 monitor layout (resolution, refresh, position, scale, transform, vrr, and
 EDID-derived identifiers for stable matching across port reassignments).
 
 ```sh
-nirimon -profile home
-nirimon -profile work
-nirimon -profile docked
-nirimon profiles        # interactive menu
+mangomon -profile home
+mangomon -profile work
+mangomon -profile docked
+mangomon profiles        # interactive menu
 ```
+
+VRR maps to the protocol's adaptive sync: on/off. The legacy hyprmon value
+"fullscreen-only" applies as on.
 
 ### Mirroring
 
-Niri has
-[no native output mirroring](https://github.com/niri-wm/niri/wiki/Screencasting)
-the way Hyprland does. nirimon keeps hyprmon's mirror picker (press `M`) and the
-exact same profile schema, but applies the mirror by spawning
+Mango has no native output mirroring the way Hyprland does. mangomon keeps
+hyprmon's mirror picker (press `M`) and the exact same profile schema, but
+applies the mirror by spawning
 [wl-mirror](https://github.com/Ferdi265/wl-mirror): for a monitor set to mirror
-another, nirimon launches `wl-mirror --fullscreen-output <target> <source>`,
+another, mangomon launches `wl-mirror --fullscreen-output <target> <source>`,
 which captures the source output and shows it fullscreen on the target.
 
 wl-mirror must be on `PATH`. The Nix package wraps it in automatically; if you
@@ -133,12 +127,12 @@ Because the mirror is an ordinary fullscreen Wayland window and not a
 compositor-level clone, it behaves differently from Hyprland's native mirror.
 Keep these gotchas in mind:
 
-- It is just a fullscreen window on the target output. niri does not pin you to
-  it: you can switch workspaces, focus other windows, or move the wl-mirror
-  window away, and the target stops showing the mirror until you switch back.
-- The mirror process is detached and keeps running after nirimon exits (so a
-  `nirimon -profile ...` from a keybind or hotplug hook leaves a working
-  mirror). nirimon tracks it in `$XDG_RUNTIME_DIR/nirimon/mirrors.json` and
+- It is just a fullscreen window on the target output. mango does not pin you to
+  it: you can switch tags, focus other windows, or move the wl-mirror window
+  away, and the target stops showing the mirror until you switch back.
+- The mirror process is detached and keeps running after mangomon exits (so a
+  `mangomon -profile ...` from a keybind or hotplug hook leaves a working
+  mirror). mangomon tracks it in `$XDG_RUNTIME_DIR/mangomon/mirrors.json` and
   tears it down on the next apply that disables the mirror. It is also cleared
   on logout, or you can `pkill wl-mirror` by hand.
 - Scaling uses wl-mirror's `fit` mode: the whole source is always shown,
@@ -150,14 +144,21 @@ Keep these gotchas in mind:
 - Only active, non-mirrored monitors can be a source, and circular mirrors are
   prevented, same as hyprmon.
 
-### Niri
+### Mango
 
-For clamshell-style switching on lid open/close, bind these to your niri
-keybinds in your niri config:
+To apply a profile at startup, and to switch profiles from a keybind, add to
+your mango config:
 
-```kdl
-binds {
-    Mod+F1 { spawn "nirimon" "-profile" "home"; }
-    Mod+F2 { spawn "nirimon" "-profile" "work"; }
-}
+```ini
+exec-once=mangomon -profile docked
+bind=SUPER,F1,spawn,mangomon -profile home
+bind=SUPER,F2,spawn,mangomon -profile work
+```
+
+If you want a layout to survive without mangomon running at startup, copy it
+into `monitorrule` lines instead (`wlr-randr` shows the values mangomon
+applied):
+
+```ini
+monitorrule=name:^eDP-1$,width:2880,height:1920,refresh:120,x:0,y:0,scale:1.5,rr:0,vrr:0
 ```
