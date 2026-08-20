@@ -3,10 +3,11 @@
 , nix-gitignore
 , makeWrapper
 , wl-mirror
+, wlr-randr
 }:
 
 buildGoApplication (lib.fix (finalAttrs: {
-  pname = "nirimon";
+  pname = "mangomon";
   version = lib.fileContents ./version.txt;
 
   src = nix-gitignore.gitignoreSource [ ] ./.;
@@ -22,14 +23,14 @@ buildGoApplication (lib.fix (finalAttrs: {
   nativeBuildInputs = [ makeWrapper ];
 
   postFixup = ''
-    wrapProgram $out/bin/nirimon --prefix PATH : "${lib.makeBinPath [ wl-mirror ]}"
+    wrapProgram $out/bin/mangomon --prefix PATH : "${lib.makeBinPath [ wl-mirror wlr-randr ]}"
   '';
 
   meta = {
-    description = "tui monitor configuration tool for niri with visual layout, drag-and-drop, and profile management";
-    homepage = "https://github.com/stepbrobd/nirimon";
+    description = "tui monitor configuration tool for mango with visual layout, drag-and-drop, and profile management";
+    homepage = "https://github.com/stepbrobd/mangomon";
     license = lib.licenses.asl20;
-    mainProgram = "nirimon";
+    mainProgram = "mangomon";
     maintainers = with lib.maintainers; [ stepbrobd ];
     platforms = lib.platforms.linux;
   };

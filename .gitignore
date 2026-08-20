@@ -57,6 +57,7 @@ __debug_bin*
 
 # Application specific
 hyprmon
+mangomon
 !cmd/hyprmon/
 *.log
 *.pid
