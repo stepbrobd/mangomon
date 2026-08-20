@@ -547,9 +547,9 @@ func reloadMonitorsCmd() tea.Cmd {
 
 func applyCmd(monitors []Monitor) tea.Cmd {
 	return func() tea.Msg {
-		// niri auto-evacuates workspaces from outputs it disables, so the
-		// hyprmon-era pre/post snapshot and migrateOrphanedWorkspaces dance
-		// is no longer needed
+		// mango moves clients off an output it disables (dwl-style
+		// closemon), so the hyprmon-era pre/post snapshot and
+		// migrateOrphanedWorkspaces dance is no longer needed
 		err := applyMonitors(monitors)
 		return applyMsg{success: err == nil, err: err}
 	}

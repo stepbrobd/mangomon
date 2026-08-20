@@ -12,10 +12,10 @@ import (
 	"syscall"
 )
 
-// niri has no native output mirroring the way hyprland does with
-// `monitor=...,mirror,SOURCE`; the niri wiki's screencasting page instead
-// points at wl-mirror, a wayland client that captures one output and shows it
-// fullscreen on another. nirimon emulates the hyprmon mirror feature by
+// mango has no native output mirroring the way hyprland does with
+// `monitor=...,mirror,SOURCE`; like niri, the closest tool is wl-mirror, a
+// wayland client that captures one output and shows it fullscreen on
+// another. mangomon emulates the hyprmon mirror feature by
 // spawning one detached wl-mirror per mirrored output and supervising those
 // processes across applies. see https://github.com/Ferdi265/wl-mirror
 const wlMirrorBinary = "wl-mirror"
@@ -37,7 +37,7 @@ var (
 )
 
 // mirrorAvailable reports whether the wl-mirror binary is resolvable in PATH.
-// the lookup is cached so the picker can call it cheaply. when false niri has
+// the lookup is cached so the picker can call it cheaply. when false mango has
 // no way to mirror, so the feature degrades to the prior no-op: a selection is
 // still saved to the profile json, it just is not applied
 func mirrorAvailable() bool {
@@ -49,17 +49,17 @@ func mirrorAvailable() bool {
 }
 
 // mirrorSpec is one desired mirror relationship: the Target output should
-// display the contents of the Source output. both are niri CONNECTOR names
-// (Monitor.Name, e.g. "DP-2"), never the EDID identifier from niriOutputName,
-// because wl-mirror addresses outputs by their wl_output name which niri sets
-// to the connector
+// display the contents of the Source output. both are CONNECTOR names
+// (Monitor.Name, e.g. "DP-2"), never the EDID-derived identifier, because
+// wl-mirror addresses outputs by their wl_output name which mango sets to
+// the connector
 type mirrorSpec struct {
 	Target string
 	Source string
 }
 
 // mirrorProc is a tracked, running wl-mirror process recorded in the runtime
-// state file so a later nirimon invocation can find and manage it by pid
+// state file so a later mangomon invocation can find and manage it by pid
 type mirrorProc struct {
 	Target string `json:"target"`
 	Source string `json:"source"`
@@ -150,16 +150,16 @@ func diffMirrors(desired []mirrorSpec, running []mirrorProc, isAlive func(int) b
 	return plan
 }
 
-// mirrorStateDir returns the directory holding nirimon's wl-mirror process
+// mirrorStateDir returns the directory holding mangomon's wl-mirror process
 // state. it lives under XDG_RUNTIME_DIR (tmpfs, cleared on logout) because the
-// tracked processes are ephemeral RUNTIME state, not configuration: nirimon is
+// tracked processes are ephemeral RUNTIME state, not configuration: mangomon is
 // apply-only and the profile json remains the sole persistent state. the
 // fallback keeps the path ephemeral and, crucially, never under ~/.config
 func mirrorStateDir() string {
 	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
-		return filepath.Join(rt, "nirimon")
+		return filepath.Join(rt, "mangomon")
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("nirimon-%d", os.Getuid()))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("mangomon-%d", os.Getuid()))
 }
 
 // loadMirrorState reads the tracked procs from dir; a missing file is the
@@ -256,9 +256,9 @@ func startMirror(spec mirrorSpec) (mirrorProc, error) {
 		return mirrorProc{}, fmt.Errorf("start wl-mirror for %s from %s: %w", spec.Target, spec.Source, err)
 	}
 
-	// reap the child if it dies while nirimon is still running, so a wl-mirror
+	// reap the child if it dies while mangomon is still running, so a wl-mirror
 	// that exits (e.g. its source output was unplugged) does not linger as a
-	// zombie. if nirimon exits first, the detached session is reparented to
+	// zombie. if mangomon exits first, the detached session is reparented to
 	// init, which reaps it instead
 	go func() { _ = cmd.Wait() }()
 
@@ -283,7 +283,7 @@ func stopMirror(proc mirrorProc) error {
 }
 
 // withMirrorLock runs fn while holding an exclusive advisory lock on a lockfile
-// in dir, serializing the reconcile read-modify-write across concurrent nirimon
+// in dir, serializing the reconcile read-modify-write across concurrent mangomon
 // invocations: the TUI apply and a headless `--profile` apply (e.g. a hotplug
 // or login hook) share one runtime dir, and without this two overlapping
 // reconciles could each spawn a wl-mirror for the same target and then drop one
@@ -326,7 +326,7 @@ func reconcileMirrors(monitors []Monitor) error {
 		}
 		if len(desired) > 0 {
 			fmt.Fprintf(os.Stderr,
-				"warning: niri has no native mirroring and wl-mirror was not found in PATH; "+
+				"warning: mango has no native mirroring and wl-mirror was not found in PATH; "+
 					"install wl-mirror to enable it (%d mirror(s) not applied)\n", len(desired))
 		}
 		if len(state) > 0 {

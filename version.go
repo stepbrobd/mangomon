@@ -13,7 +13,7 @@ var (
 
 // VersionInfo returns formatted version information
 func VersionInfo() string {
-	return fmt.Sprintf("nirimon %s (%s)", Version, GoVersion)
+	return fmt.Sprintf("mangomon %s (%s)", Version, GoVersion)
 }
 
 // ShortVersion returns just the version number

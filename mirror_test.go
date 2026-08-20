@@ -332,7 +332,7 @@ func TestMirrorStateRoundTrip(t *testing.T) {
 func TestMirrorStateDirNotUnderConfig(t *testing.T) {
 	// with XDG_RUNTIME_DIR set the path is ephemeral under it
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/4242")
-	if got, want := mirrorStateDir(), filepath.Join("/run/user/4242", "nirimon"); got != want {
+	if got, want := mirrorStateDir(), filepath.Join("/run/user/4242", "mangomon"); got != want {
 		t.Errorf("mirrorStateDir() = %q, want %q", got, want)
 	}
 

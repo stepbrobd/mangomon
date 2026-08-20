@@ -130,10 +130,10 @@ func (m model) renderHelp() string {
 	var allLines []string
 
 	// Title and version
-	allLines = append(allLines, titleStyle.Render(fmt.Sprintf("nirimon %s", ShortVersion())))
+	allLines = append(allLines, titleStyle.Render(fmt.Sprintf("mangomon %s", ShortVersion())))
 	allLines = append(allLines, "Copyright © 2025 Eran Sandler")
 	allLines = append(allLines, "")
-	allLines = append(allLines, "A visual monitor configuration tool for Hyprland window manager.")
+	allLines = append(allLines, "A visual monitor configuration tool for the mango wayland compositor.")
 	allLines = append(allLines, "")
 
 	// Keyboard shortcuts
@@ -153,7 +153,7 @@ func (m model) renderHelp() string {
 		{"F", "Open mode selection dialog"},
 		{"M", "Open mirror configuration dialog"},
 		{"C/D", "Open advanced display settings"},
-		{"A", "Apply the changes right now (lost on niri reload; save as a profile to persist)"},
+		{"A", "Apply the changes right now (lost on mango restart; save as a profile to persist)"},
 		{"O", "Open profiles page"},
 		{"P", "Save as profile"},
 		{"Z", "Revert to previous configuration"},
@@ -256,7 +256,7 @@ func (m model) renderHeader() string {
 	// Add version if not "dev"
 	header := fmt.Sprintf("%s   %s", grid, snap)
 	if Version != "dev" {
-		header = fmt.Sprintf("nirimon %s  |  %s", ShortVersion(), header)
+		header = fmt.Sprintf("mangomon %s  |  %s", ShortVersion(), header)
 	}
 
 	return headerStyle.Render(header)

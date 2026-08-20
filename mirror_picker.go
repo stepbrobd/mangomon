@@ -180,7 +180,7 @@ func (m mirrorPickerModel) View() string {
 		b.WriteString(hintStyle.Render("(applied via wl-mirror on apply; saved in profile json)"))
 	} else {
 		hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Italic(true)
-		b.WriteString(hintStyle.Render("(niri has no native mirror and wl-mirror is not in PATH; saved but not applied)"))
+		b.WriteString(hintStyle.Render("(mango has no native mirror and wl-mirror is not in PATH; saved but not applied)"))
 	}
 	b.WriteString("\n\n")
 
