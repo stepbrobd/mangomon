@@ -1,0 +1,434 @@
+package main
+
+import (
+	"encoding/json"
+	"reflect"
+	"regexp"
+	"testing"
+)
+
+func TestParseTransform(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"normal", 0},
+		{"Normal", 0},
+		{"NORMAL", 0},
+		{"90", 1},
+		{"180", 2},
+		{"270", 3},
+		{"flipped", 4},
+		{"Flipped", 4},
+		{"flipped-90", 5},
+		{"flipped_90", 5},
+		{"FLIPPED90", 5},
+		{"flipped-180", 6},
+		{"flipped-270", 7},
+		{"garbage", 0},
+		{"", 0},
+	}
+	for _, tt := range tests {
+		if got := parseTransform(tt.in); got != tt.want {
+			t.Errorf("parseTransform(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestTransformRoundTrip(t *testing.T) {
+	for i := range 8 {
+		got := parseTransform(transformString(i))
+		if got != i {
+			t.Errorf("round trip for transform %d: emitted %q, parsed back as %d",
+				i, transformString(i), got)
+		}
+	}
+}
+
+func TestBuildEDIDName(t *testing.T) {
+	withSerial := "D8RVY54"
+	emptySerial := ""
+	whitespace := "  "
+	tests := []struct {
+		name   string
+		make_  string
+		model  string
+		serial *string
+		want   string
+	}{
+		{"all present", "Dell Inc.", "DELL P3425WE", &withSerial,
+			"Dell Inc. DELL P3425WE D8RVY54"},
+		{"nil serial uses Unknown", "BOE", "NE135A1M-NY1", nil,
+			"BOE NE135A1M-NY1 Unknown"},
+		{"empty serial uses Unknown", "BOE", "NE135A1M-NY1", &emptySerial,
+			"BOE NE135A1M-NY1 Unknown"},
+		{"whitespace serial uses Unknown", "BOE", "NE135A1M-NY1", &whitespace,
+			"BOE NE135A1M-NY1 Unknown"},
+		{"empty make is dropped", "", "Model", nil, "Model Unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := buildEDIDName(tt.make_, tt.model, tt.serial); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMHz pins the float-to-millihertz conversion against values wlr-randr
+// actually prints. wlr-randr emits refresh as (float)mhz/1000 through C float
+// precision (60001 mHz prints as 60.000999), and on apply it recovers the
+// integer with round(hz*1000), so the conversion must reproduce the exact
+// advertised millihertz for every printed value
+func TestMHz(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want int
+	}{
+		{59.973000, 59973},
+		{99.982002, 99982},
+		{120.000000, 120000},
+		{60.000999, 60001},
+		{240.083, 240083},
+		{59.939999, 59940},
+	}
+	for _, tt := range tests {
+		if got := mhz(tt.in); got != tt.want {
+			t.Errorf("mhz(%v) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSnapMode(t *testing.T) {
+	// mode list captured from wlr-randr --json against mango on this host,
+	// including eDP-1's real-world quirk of two preferred modes and the
+	// C-float artifact 60.000999 (= 60001 mHz)
+	modes := []wlrMode{
+		{Width: 3440, Height: 1440, Refresh: 59.973000, Preferred: true, Current: true},
+		{Width: 3440, Height: 1440, Refresh: 99.982002},
+		{Width: 2560, Height: 1440, Refresh: 59.951000},
+		{Width: 2880, Height: 1920, Refresh: 120.000000, Preferred: true},
+		{Width: 2880, Height: 1920, Refresh: 60.000999, Preferred: true},
+	}
+
+	tests := []struct {
+		name      string
+		w, h      uint32
+		hz        float32
+		want      string
+		wantError bool
+	}{
+		{"exact rate", 3440, 1440, 59.973, "3440x1440@59.973", false},
+		{"profile saved at 60.000 snaps to 59.973", 3440, 1440, 60.000, "3440x1440@59.973", false},
+		{"high refresh", 3440, 1440, 99.982, "3440x1440@99.982", false},
+		{"prefers closer of two candidates", 2880, 1920, 60.5, "2880x1920@60.001", false},
+		{"exact 120", 2880, 1920, 120.0, "2880x1920@120.000", false},
+		{"resolution mismatch", 1024, 768, 60.0, "", true},
+		{"delta beyond 1Hz rejected", 3440, 1440, 80.0, "", true},
+		{"empty modes list", 3440, 1440, 60.0, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := modes
+			if tt.name == "empty modes list" {
+				m = nil
+			}
+			got, err := snapMode(m, tt.w, tt.h, tt.hz)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("snapMode = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyArgs(t *testing.T) {
+	live := []wlrOutput{
+		{
+			Name: "DP-4",
+			Modes: []wlrMode{
+				{Width: 3440, Height: 1440, Refresh: 59.973000, Preferred: true, Current: true},
+				{Width: 3440, Height: 1440, Refresh: 99.982002},
+			},
+			Enabled: true,
+		},
+		{
+			Name: "eDP-1",
+			Modes: []wlrMode{
+				{Width: 2880, Height: 1920, Refresh: 120.000000, Preferred: true},
+			},
+			Enabled: true,
+		},
+	}
+
+	t.Run("full set builds one atomic invocation", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "DP-4", Active: true, PxW: 3440, PxH: 1440, Hz: 59.973,
+				X: 3840, Y: 0, Scale: 1.0, Transform: 0, VRR: 0},
+			{Name: "eDP-1", Active: false},
+		}
+		got, err := applyArgs(monitors, live)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{
+			"--output", "DP-4", "--on",
+			"--mode", "3440x1440@59.973",
+			"--pos", "3840,0",
+			"--scale", "1",
+			"--transform", "normal",
+			"--adaptive-sync", "disabled",
+			"--output", "eDP-1", "--off",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("applyArgs =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("fractional scale and rotation and vrr", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "eDP-1", Active: true, PxW: 2880, PxH: 1920, Hz: 120,
+				X: 0, Y: 0, Scale: 1.5, Transform: 3, VRR: 1},
+		}
+		got, err := applyArgs(monitors, live)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{
+			"--output", "eDP-1", "--on",
+			"--mode", "2880x1920@120.000",
+			"--pos", "0,0",
+			"--scale", "1.5",
+			"--transform", "270",
+			"--adaptive-sync", "enabled",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("applyArgs =\n%v\nwant\n%v", got, want)
+		}
+	})
+
+	t.Run("legacy on-demand vrr applies as enabled", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "eDP-1", Active: true, PxW: 2880, PxH: 1920, Hz: 120,
+				Scale: 1.0, VRR: 2},
+		}
+		got, err := applyArgs(monitors, live)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		found := false
+		for i := 0; i+1 < len(got); i++ {
+			if got[i] == "--adaptive-sync" && got[i+1] == "enabled" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("VRR=2 should apply --adaptive-sync enabled, args: %v", got)
+		}
+	})
+
+	t.Run("disconnected output is an error", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "HDMI-A-1", Active: true, PxW: 1920, PxH: 1080, Hz: 60, Scale: 1.0},
+		}
+		if _, err := applyArgs(monitors, live); err == nil {
+			t.Errorf("expected error for output not in live set")
+		}
+	})
+}
+
+// TestGetAvailableModesFormatMatchesPicker pins the contract between
+// getAvailableModes and the mode picker's parser. The picker regex requires
+// the trailing "Hz" suffix; without it parseDisplayModes returns an empty
+// slice and the mode picker view panics on F
+func TestGetAvailableModesFormatMatchesPicker(t *testing.T) {
+	pickerRegex := regexp.MustCompile(`(\d+)x(\d+)@([\d.]+)Hz`)
+	sample := "3440x1440@59.973Hz"
+	if !pickerRegex.MatchString(sample) {
+		t.Fatalf("regex no longer accepts the emitted format - mode_picker parser changed?")
+	}
+	if pickerRegex.MatchString("3440x1440@59.973") {
+		t.Fatalf("regex now accepts the suffix-less form; the suffix guard is no longer needed")
+	}
+}
+
+func TestOutputsToMonitorsFixture(t *testing.T) {
+	// DP-4 and eDP-1 are verbatim wlr-randr 0.5.0 --json output against
+	// mango on this host (modes truncated); DP-2 is the disabled-head shape
+	// the same printer emits (enabled false, no position, transform, scale,
+	// or adaptive_sync keys, no current mode). covers the null serial, the
+	// disabled-head fallback to the preferred mode, and the C-float refresh
+	fixture := `[
+		{
+			"name": "DP-4",
+			"description": "Dell Inc. DELL P3425WE D8RVY54 (DP-4)",
+			"make": "Dell Inc.",
+			"model": "DELL P3425WE",
+			"serial": "D8RVY54",
+			"physical_size": {"width": 800, "height": 330},
+			"enabled": true,
+			"modes": [
+				{"width": 3440, "height": 1440, "refresh": 59.973000, "preferred": true, "current": true},
+				{"width": 3440, "height": 1440, "refresh": 99.982002, "preferred": false, "current": false},
+				{"width": 2560, "height": 1440, "refresh": 59.951000, "preferred": false, "current": false}
+			],
+			"position": {"x": 3840, "y": 0},
+			"transform": "normal",
+			"scale": 1.000000,
+			"adaptive_sync": false
+		},
+		{
+			"name": "eDP-1",
+			"description": "BOE NE135A1M-NY1 (eDP-1)",
+			"make": "BOE",
+			"model": "NE135A1M-NY1",
+			"serial": null,
+			"physical_size": {"width": 290, "height": 190},
+			"enabled": true,
+			"modes": [
+				{"width": 2880, "height": 1920, "refresh": 120.000000, "preferred": true, "current": true},
+				{"width": 2880, "height": 1920, "refresh": 60.000999, "preferred": true, "current": false}
+			],
+			"position": {"x": 0, "y": 0},
+			"transform": "270",
+			"scale": 1.500000,
+			"adaptive_sync": true
+		},
+		{
+			"name": "DP-2",
+			"description": "Dell Inc. DELL U2410 F525M0BQ239L (DP-2)",
+			"make": "Dell Inc.",
+			"model": "DELL U2410",
+			"serial": "F525M0BQ239L",
+			"physical_size": {"width": 520, "height": 320},
+			"enabled": false,
+			"modes": [
+				{"width": 1920, "height": 1200, "refresh": 59.950001, "preferred": true, "current": false},
+				{"width": 1280, "height": 1024, "refresh": 75.025002, "preferred": false, "current": false}
+			]
+		}
+	]`
+
+	var outputs []wlrOutput
+	if err := json.Unmarshal([]byte(fixture), &outputs); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	monitors := outputsToMonitors(outputs)
+
+	if len(monitors) != 3 {
+		t.Fatalf("got %d monitors, want 3", len(monitors))
+	}
+
+	// sorted by name; lowercase 'e' sorts after uppercase 'D' in ASCII
+	dp2, dp4, edp1 := monitors[0], monitors[1], monitors[2]
+	if dp2.Name != "DP-2" || dp4.Name != "DP-4" || edp1.Name != "eDP-1" {
+		t.Fatalf("unexpected sort order: %s, %s, %s", dp2.Name, dp4.Name, edp1.Name)
+	}
+
+	if got, want := dp4.HardwareID, "Dell Inc./DELL P3425WE/D8RVY54"; got != want {
+		t.Errorf("DP-4 HardwareID = %q, want %q", got, want)
+	}
+	if got, want := dp4.EDIDName, "Dell Inc. DELL P3425WE D8RVY54"; got != want {
+		t.Errorf("DP-4 EDIDName = %q, want %q", got, want)
+	}
+	if !dp4.Active {
+		t.Errorf("DP-4 should be Active (enabled true)")
+	}
+	if dp4.PxW != 3440 || dp4.PxH != 1440 {
+		t.Errorf("DP-4 PxW/PxH = %d/%d, want 3440/1440", dp4.PxW, dp4.PxH)
+	}
+	if dp4.Hz < 59.970 || dp4.Hz > 59.976 {
+		t.Errorf("DP-4 Hz = %v, want ~59.973", dp4.Hz)
+	}
+	if dp4.X != 3840 || dp4.Y != 0 {
+		t.Errorf("DP-4 X/Y = %d/%d, want 3840/0", dp4.X, dp4.Y)
+	}
+	if dp4.Scale != 1.0 {
+		t.Errorf("DP-4 Scale = %v, want 1.0", dp4.Scale)
+	}
+	if dp4.Transform != 0 {
+		t.Errorf("DP-4 Transform = %d, want 0", dp4.Transform)
+	}
+	if dp4.VRR != 0 {
+		t.Errorf("DP-4 VRR = %d, want 0 (adaptive_sync false)", dp4.VRR)
+	}
+	if len(dp4.Modes) != 3 {
+		t.Errorf("DP-4 Modes len = %d, want 3", len(dp4.Modes))
+	}
+
+	if got, want := edp1.HardwareID, "BOE/NE135A1M-NY1"; got != want {
+		t.Errorf("eDP-1 HardwareID = %q, want %q (no /serial segment)", got, want)
+	}
+	if got, want := edp1.EDIDName, "BOE NE135A1M-NY1 Unknown"; got != want {
+		t.Errorf("eDP-1 EDIDName = %q, want %q (Unknown sentinel)", got, want)
+	}
+	if edp1.Scale != 1.5 {
+		t.Errorf("eDP-1 Scale = %v, want 1.5", edp1.Scale)
+	}
+	if edp1.Transform != 3 {
+		t.Errorf("eDP-1 Transform = %d, want 3 (270)", edp1.Transform)
+	}
+	if edp1.VRR != 1 {
+		t.Errorf("eDP-1 VRR = %d, want 1 (adaptive_sync true)", edp1.VRR)
+	}
+
+	if dp2.Active {
+		t.Errorf("DP-2 should be inactive (enabled false)")
+	}
+	// disabled head has no current mode; preferred mode supplies dimensions
+	if dp2.PxW != 1920 || dp2.PxH != 1200 {
+		t.Errorf("DP-2 PxW/PxH = %d/%d, want 1920/1200 (preferred fallback)", dp2.PxW, dp2.PxH)
+	}
+	// disabled monitors still need Scale=1 so the world bounds math in
+	// updateWorld does not divide by zero
+	if dp2.Scale != 1.0 {
+		t.Errorf("DP-2 Scale = %v, want 1.0 default for disabled", dp2.Scale)
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	tests := []struct {
+		in     string
+		wantW  uint32
+		wantH  uint32
+		wantHz float32
+		isNil  bool
+	}{
+		{"3440x1440@59.973Hz", 3440, 1440, 59.973, false},
+		{"3440x1440@59.973", 3440, 1440, 59.973, false},
+		{"1920x1080@60.00Hz", 1920, 1080, 60.00, false},
+		{"640x480@59.940", 640, 480, 59.940, false},
+		{"garbage", 0, 0, 0, true},
+		{"2560x@60", 0, 0, 0, true},
+		{"x1440@60", 0, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			m := parseMode(tt.in)
+			if tt.isNil {
+				if m != nil {
+					t.Errorf("expected nil, got %+v", *m)
+				}
+				return
+			}
+			if m == nil {
+				t.Fatalf("parseMode returned nil")
+			}
+			if m.W != tt.wantW || m.H != tt.wantH {
+				t.Errorf("WxH = %dx%d, want %dx%d", m.W, m.H, tt.wantW, tt.wantH)
+			}
+			if d := m.Hz - tt.wantHz; d > 0.01 || d < -0.01 {
+				t.Errorf("Hz = %v, want %v", m.Hz, tt.wantHz)
+			}
+		})
+	}
+}
