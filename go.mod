@@ -1,4 +1,4 @@
-module ysun.co/nirimon
+module ysun.co/mangomon
 
 go 1.26
 
