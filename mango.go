@@ -33,9 +33,11 @@ const (
 	worldPaddingPx      = 500
 	desktopBorderMargin = 3
 	desktopFooterHeight = 10
+)
 
-	// a tunnelled DP head can accept a modeset and drop the link seconds
-	// later, so an applied layout counts only once it has held
+// a tunnelled DP head can accept a modeset and drop the link seconds later,
+// so an applied layout counts only once it has held
+var (
 	applyPollInterval  = 500 * time.Millisecond
 	applyHoldTime      = 3 * time.Second
 	applyVerifyTimeout = 12 * time.Second
@@ -78,7 +80,7 @@ func parseMode(modeStr string) *Mode {
 // configuration through it the way nirimon drives `niri msg`. stderr is
 // folded into the error since wlr-randr puts the useful diagnostics there
 // (e.g. "failed to apply configuration") and `exit status 1` alone is useless
-func execWlrRandr(args ...string) ([]byte, error) {
+var execWlrRandr = func(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wlrRandrTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wlr-randr", args...)
@@ -586,6 +588,13 @@ func restoreOnce(previous []Monitor) error {
 }
 
 func applyMonitors(monitors []Monitor) error {
+	return applyLayout(monitors, true)
+}
+
+// applyLayout commits monitors and puts the observed layout back when the
+// heads do not come up. record is false while undoing an apply so the layout
+// being undone does not become the next rollback target.
+func applyLayout(monitors []Monitor, record bool) error {
 	// the wanted mode is float Hz while wlr-randr keys modes by exact
 	// millihertz, so snapping needs the live mode list
 	live, err := readOutputs()
@@ -597,6 +606,12 @@ func applyMonitors(monitors []Monitor) error {
 	if err != nil {
 		return err
 	}
+
+	previous := outputsToMonitors(live)
+	if record {
+		rollbackLayout = previous
+	}
+
 	if len(args) > 0 {
 		if _, err := execWlrRandr(args...); err != nil {
 			return fmt.Errorf("apply output configuration: %w", err)
@@ -604,7 +619,7 @@ func applyMonitors(monitors []Monitor) error {
 		// a zero exit status means the compositor accepted the request, not
 		// that the heads came up
 		if err := confirmApplied(monitors); err != nil {
-			restoreLayout(outputsToMonitors(live))
+			restoreLayout(previous)
 			return fmt.Errorf("configuration did not take effect: %w", err)
 		}
 	}
@@ -642,17 +657,12 @@ func getAvailableModes(monitorName string) ([]string, error) {
 	return nil, fmt.Errorf("monitor %s not found", monitorName)
 }
 
-// rollback state
-var previousMonitors []Monitor
-
-func saveRollback(monitors []Monitor) {
-	previousMonitors = make([]Monitor, len(monitors))
-	copy(previousMonitors, monitors)
-}
+// rollbackLayout is the head state observed before the most recent apply
+var rollbackLayout []Monitor
 
 func rollback() error {
-	if previousMonitors == nil {
-		return fmt.Errorf("no previous state to rollback to")
+	if rollbackLayout == nil {
+		return errors.New("no previous layout recorded")
 	}
-	return applyMonitors(previousMonitors)
+	return applyLayout(rollbackLayout, false)
 }

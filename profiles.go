@@ -222,8 +222,6 @@ func applyProfile(name string) error {
 		return fmt.Errorf("no monitors from profile %q are currently connected", name)
 	}
 
-	saveRollback(resolved)
-
 	if err := applyMonitors(resolved); err != nil {
 		return fmt.Errorf("failed to apply profile: %w", err)
 	}

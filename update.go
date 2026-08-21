@@ -495,7 +495,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "a", "A":
-		saveRollback(m.Monitors)
 		return m, applyCmd(m.Monitors)
 
 	case "z", "Z":

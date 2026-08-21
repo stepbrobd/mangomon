@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseTransform(t *testing.T) {
@@ -570,4 +572,148 @@ func TestRestoreSelection(t *testing.T) {
 			t.Errorf("presentOutputs = %v, want empty", got)
 		}
 	})
+}
+
+// fakeCompositor answers --json from its own head state and records every
+// configuration it is handed, so apply and rollback can be driven without a
+// running compositor.
+type fakeCompositor struct {
+	enabled map[string]bool
+	refresh map[string]float64
+	calls   [][]string
+	reject  bool
+}
+
+func newFakeCompositor() *fakeCompositor {
+	return &fakeCompositor{
+		enabled: map[string]bool{"DP-1": false, "DP-2": true},
+		refresh: map[string]float64{"DP-2": 59.951000},
+	}
+}
+
+func (f *fakeCompositor) modes(name string) []wlrMode {
+	all := []float64{299.993011, 240.001007, 143.973007, 120.000000, 59.951000}
+	out := make([]wlrMode, 0, len(all))
+	for _, hz := range all {
+		out = append(out, wlrMode{
+			Width: 2560, Height: 1440, Refresh: hz,
+			Current: f.enabled[name] && f.refresh[name] == hz,
+		})
+	}
+	return out
+}
+
+func (f *fakeCompositor) exec(args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "--json" {
+		heads := make([]wlrOutput, 0, 2)
+		for _, name := range []string{"DP-1", "DP-2"} {
+			scale := 1.0
+			heads = append(heads, wlrOutput{
+				Name: name, Enabled: f.enabled[name], Modes: f.modes(name),
+				Position: &wlrPosition{}, Scale: &scale,
+			})
+		}
+		b, err := json.Marshal(heads)
+		return b, err
+	}
+
+	f.calls = append(f.calls, args)
+	if f.reject {
+		return nil, errors.New("failed to apply configuration")
+	}
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--output" || i+1 >= len(args) {
+			continue
+		}
+		name := args[i+1]
+		for j := i + 2; j < len(args) && args[j] != "--output"; j++ {
+			switch args[j] {
+			case "--off":
+				f.enabled[name] = false
+			case "--on":
+				f.enabled[name] = true
+			case "--mode":
+				if m := parseMode(args[j+1]); m != nil {
+					f.refresh[name] = float64(mhz(float64(m.Hz))) / 1000.0
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func withFakeCompositor(t *testing.T, f *fakeCompositor) {
+	t.Helper()
+	realExec, realHold, realPoll := execWlrRandr, applyHoldTime, applyPollInterval
+	realRestore := restoreTimeout
+	execWlrRandr = f.exec
+	applyHoldTime = 10 * time.Millisecond
+	applyPollInterval = time.Millisecond
+	restoreTimeout = 50 * time.Millisecond
+	rollbackLayout = nil
+	t.Cleanup(func() {
+		execWlrRandr, applyHoldTime, applyPollInterval = realExec, realHold, realPoll
+		restoreTimeout = realRestore
+		rollbackLayout = nil
+	})
+}
+
+// TestRollbackTargetsPreApplyState pins the direction of the rollback. Handing
+// saveRollback the configuration about to be applied made revert a no-op.
+func TestRollbackTargetsPreApplyState(t *testing.T) {
+	f := newFakeCompositor()
+	withFakeCompositor(t, f)
+
+	next := []Monitor{
+		{Name: "DP-1", Active: false},
+		{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 120, Scale: 1},
+	}
+	if err := applyMonitors(next); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if f.refresh["DP-2"] != 120 {
+		t.Fatalf("apply left DP-2 at %v, want 120", f.refresh["DP-2"])
+	}
+
+	for _, m := range rollbackLayout {
+		if m.Name == "DP-2" && m.Hz != 59.951 {
+			t.Fatalf("rollback target holds %v, want the pre-apply 59.951", m.Hz)
+		}
+	}
+
+	if err := rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if f.refresh["DP-2"] != 59.951 {
+		t.Errorf("rollback left DP-2 at %v, want 59.951", f.refresh["DP-2"])
+	}
+}
+
+// TestRollbackDoesNotRetargetItself keeps a second revert from reapplying the
+// layout the first one undid.
+func TestRollbackDoesNotRetargetItself(t *testing.T) {
+	f := newFakeCompositor()
+	withFakeCompositor(t, f)
+
+	next := []Monitor{{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 120, Scale: 1}}
+	if err := applyMonitors(next); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatalf("first rollback: %v", err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatalf("second rollback: %v", err)
+	}
+	if f.refresh["DP-2"] != 59.951 {
+		t.Errorf("second rollback moved DP-2 to %v, want it to stay at 59.951", f.refresh["DP-2"])
+	}
+}
+
+func TestRollbackWithoutAnApply(t *testing.T) {
+	f := newFakeCompositor()
+	withFakeCompositor(t, f)
+	if err := rollback(); err == nil {
+		t.Fatal("rollback before any apply must fail")
+	}
 }
