@@ -326,7 +326,7 @@ func TestResolveProfileMonitors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resolved := resolveProfileMonitors(tt.saved, current)
+			resolved, _ := resolveProfileMonitors(tt.saved, current)
 			if len(resolved) != tt.expectedCount {
 				t.Errorf("got %d monitors, want %d", len(resolved), tt.expectedCount)
 				return

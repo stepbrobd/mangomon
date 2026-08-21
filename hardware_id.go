@@ -54,7 +54,9 @@ func disambiguateHardwareIDs(monitors []Monitor) {
 // resolveProfileMonitors takes saved profile monitors and maps them to
 // currently connected monitors by HardwareID. Returns only monitors that
 // are currently connected, with their connector Name updated to the current value.
-func resolveProfileMonitors(saved, current []Monitor) []Monitor {
+// The second return value names the saved monitors that are not connected, so
+// callers can say what a partial apply left out.
+func resolveProfileMonitors(saved, current []Monitor) ([]Monitor, []string) {
 	currentByHWID := make(map[string]Monitor)
 	currentByName := make(map[string]Monitor)
 	for _, m := range current {
@@ -65,6 +67,7 @@ func resolveProfileMonitors(saved, current []Monitor) []Monitor {
 	}
 
 	var resolved []Monitor
+	var absent []string
 	for _, savedMon := range saved {
 		var currentMon Monitor
 		var found bool
@@ -77,6 +80,7 @@ func resolveProfileMonitors(saved, current []Monitor) []Monitor {
 		}
 
 		if !found {
+			absent = append(absent, savedMon.Name)
 			continue
 		}
 
@@ -96,7 +100,7 @@ func resolveProfileMonitors(saved, current []Monitor) []Monitor {
 		resolved = append(resolved, resolvedMon)
 	}
 
-	return resolved
+	return resolved, absent
 }
 
 // migrateProfileMonitors backfills HardwareID on legacy profile monitors

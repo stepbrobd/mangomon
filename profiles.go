@@ -274,9 +274,13 @@ func applyProfile(name string) error {
 		return fmt.Errorf("failed to read current monitors: %w", err)
 	}
 
-	resolved := resolveProfileMonitors(profile.Monitors, currentMonitors)
+	resolved, absent := resolveProfileMonitors(profile.Monitors, currentMonitors)
 	if len(resolved) == 0 {
 		return fmt.Errorf("no monitors from profile %q are currently connected", name)
+	}
+	if len(absent) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: not connected, left out of profile %q: %s\n",
+			name, strings.Join(absent, ", "))
 	}
 
 	if err := applyMonitors(resolved); err != nil {

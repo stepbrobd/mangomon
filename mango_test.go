@@ -862,3 +862,28 @@ func TestWriteFileAtomic(t *testing.T) {
 		t.Errorf("%d files left behind, want only the target", len(entries))
 	}
 }
+
+// TestResolveProfileMonitorsNamesAbsent covers applying a profile with one of
+// its monitors unplugged, which used to report success over a partial layout.
+func TestResolveProfileMonitorsNamesAbsent(t *testing.T) {
+	current := []Monitor{
+		{Name: "DP-2", HardwareID: "LG Electronics/LG ULTRAGEAR/508AXNR0J135"},
+	}
+	saved := []Monitor{
+		{Name: "DP-1", HardwareID: "LG Electronics/LG ULTRAGEAR+/601NTQDH7820"},
+		{Name: "DP-2", HardwareID: "LG Electronics/LG ULTRAGEAR/508AXNR0J135"},
+		{Name: "eDP-1", HardwareID: "BOE/NE135A1M-NY1"},
+	}
+
+	resolved, absent := resolveProfileMonitors(saved, current)
+	if len(resolved) != 1 || resolved[0].Name != "DP-2" {
+		t.Fatalf("resolved = %v, want only DP-2", resolved)
+	}
+	if !reflect.DeepEqual(absent, []string{"DP-1", "eDP-1"}) {
+		t.Errorf("absent = %v, want [DP-1 eDP-1]", absent)
+	}
+
+	if _, absent := resolveProfileMonitors(saved, saved); absent != nil {
+		t.Errorf("absent = %v, want none when every monitor is connected", absent)
+	}
+}
