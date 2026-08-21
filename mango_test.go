@@ -623,7 +623,7 @@ func (f *fakeCompositor) exec(args ...string) ([]byte, error) {
 	if f.reject {
 		return nil, errors.New("failed to apply configuration")
 	}
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		if args[i] != "--output" || i+1 >= len(args) {
 			continue
 		}
