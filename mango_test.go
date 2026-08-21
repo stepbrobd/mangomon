@@ -755,3 +755,72 @@ func TestConcurrentApplyRejected(t *testing.T) {
 		t.Errorf("apply after the first finished: %v", err)
 	}
 }
+
+// TestKeepStoredGeometry pins the case that rewrote eDP-1 from scale 1.5 to
+// 1.0: the panel was off, so the live read had no scale to report.
+func TestKeepStoredGeometry(t *testing.T) {
+	stored := []Monitor{
+		{Name: "eDP-1", Scale: 1.5, X: 320, Y: 2880},
+		{Name: "DP-1", Scale: 1.0, X: 0, Y: 1440},
+	}
+
+	t.Run("unreported geometry falls back to the profile", func(t *testing.T) {
+		fresh := []Monitor{
+			{Name: "eDP-1", Scale: 1.0, X: 0, Y: 0, GeometryKnown: false},
+			{Name: "DP-1", Scale: 1.0, X: 0, Y: 1440, GeometryKnown: true},
+		}
+		got := keepStoredGeometry(fresh, stored)
+		if got[0].Scale != 1.5 || got[0].X != 320 || got[0].Y != 2880 {
+			t.Errorf("eDP-1 = scale %v at (%d,%d), want 1.5 at (320,2880)", got[0].Scale, got[0].X, got[0].Y)
+		}
+	})
+
+	t.Run("an edit to an inactive head survives", func(t *testing.T) {
+		fresh := []Monitor{{Name: "eDP-1", Scale: 2.0, X: 100, Y: 200, GeometryKnown: true}}
+		got := keepStoredGeometry(fresh, stored)
+		if got[0].Scale != 2.0 || got[0].X != 100 {
+			t.Errorf("edit was discarded, got scale %v at (%d,%d)", got[0].Scale, got[0].X, got[0].Y)
+		}
+	})
+
+	t.Run("head absent from the stored profile", func(t *testing.T) {
+		fresh := []Monitor{{Name: "DP-9", Scale: 1.0, GeometryKnown: false}}
+		if got := keepStoredGeometry(fresh, stored); got[0].Scale != 1.0 {
+			t.Errorf("unexpected scale %v", got[0].Scale)
+		}
+	})
+
+	t.Run("input is not mutated", func(t *testing.T) {
+		fresh := []Monitor{{Name: "eDP-1", Scale: 1.0, GeometryKnown: false}}
+		keepStoredGeometry(fresh, stored)
+		if fresh[0].Scale != 1.0 {
+			t.Error("keepStoredGeometry mutated its argument")
+		}
+	})
+}
+
+// TestOutputsToMonitorsMarksGeometry ties the flag to what wlr-randr reports.
+func TestOutputsToMonitorsMarksGeometry(t *testing.T) {
+	scale := 1.25
+	live := []wlrOutput{
+		{Name: "DP-1", Enabled: true, Scale: &scale, Position: &wlrPosition{X: 10, Y: 20},
+			Modes: []wlrMode{{Width: 2560, Height: 1440, Refresh: 60, Current: true}}},
+		{Name: "eDP-1", Enabled: false,
+			Modes: []wlrMode{{Width: 2880, Height: 1920, Refresh: 120, Preferred: true}}},
+	}
+
+	got := outputsToMonitors(live)
+	byName := map[string]Monitor{}
+	for _, m := range got {
+		byName[m.Name] = m
+	}
+	if !byName["DP-1"].GeometryKnown {
+		t.Error("an enabled head reports scale, so its geometry is known")
+	}
+	if byName["eDP-1"].GeometryKnown {
+		t.Error("a disabled head reports no scale, so its geometry is a placeholder")
+	}
+	if byName["eDP-1"].Scale != 1.0 {
+		t.Errorf("placeholder scale = %v, want 1.0 to keep the world math finite", byName["eDP-1"].Scale)
+	}
+}

@@ -63,6 +63,7 @@ func saveProfile(name string, monitors []Monitor) error {
 		existingProfile, err := loadProfile(name)
 		if err == nil {
 			profile.CreatedAt = existingProfile.CreatedAt
+			profile.Monitors = keepStoredGeometry(profile.Monitors, existingProfile.Monitors)
 		}
 	}
 
@@ -77,6 +78,29 @@ func saveProfile(name string, monitors []Monitor) error {
 	return nil
 }
 
+// keepStoredGeometry fills scale and position from stored for heads whose
+// geometry the compositor did not report, so saving a layout while a monitor
+// is off does not overwrite what the profile already knows about it.
+func keepStoredGeometry(monitors, stored []Monitor) []Monitor {
+	byName := make(map[string]Monitor, len(stored))
+	for _, m := range stored {
+		byName[m.Name] = m
+	}
+
+	merged := make([]Monitor, len(monitors))
+	copy(merged, monitors)
+	for i, m := range merged {
+		prev, ok := byName[m.Name]
+		if m.GeometryKnown || !ok {
+			continue
+		}
+		merged[i].Scale = prev.Scale
+		merged[i].X = prev.X
+		merged[i].Y = prev.Y
+	}
+	return merged
+}
+
 func loadProfile(name string) (*Profile, error) {
 	filename := filepath.Join(getProfilesDir(), fmt.Sprintf("%s.json", name))
 
@@ -88,6 +112,11 @@ func loadProfile(name string) (*Profile, error) {
 	var profile Profile
 	if err := json.Unmarshal(data, &profile); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal profile: %w", err)
+	}
+
+	// a stored layout is intent, so its geometry is known by definition
+	for i := range profile.Monitors {
+		profile.Monitors[i].GeometryKnown = true
 	}
 
 	return &profile, nil

@@ -327,12 +327,11 @@ func outputsToMonitors(outputs []wlrOutput) []Monitor {
 		if out.Transform != nil {
 			monitor.Transform = parseTransform(*out.Transform)
 		}
+		monitor.GeometryKnown = out.Scale != nil
 		if out.Scale != nil {
 			monitor.Scale = float32(*out.Scale)
 		} else {
-			// disabled heads carry no scale; default to 1.0 rather than
-			// leaving the field zero which would divide by zero in the
-			// world-bounds math
+			// a zero scale would divide by zero in the world bounds math
 			monitor.Scale = 1.0
 		}
 

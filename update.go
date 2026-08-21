@@ -122,6 +122,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case scaleSelectedMsg:
 			if m.Selected >= 0 && m.Selected < len(m.Monitors) {
 				m.Monitors[m.Selected].Scale = msg.scale
+				m.Monitors[m.Selected].GeometryKnown = true
 				m.Status = fmt.Sprintf("Scale set to %.2fx", msg.scale)
 			}
 			m.ShowScalePicker = false
@@ -361,6 +362,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				mon := &m.Monitors[m.Selected]
 				delta := float32(0.05)
 				mon.Scale = clamp(mon.Scale+delta, 0.5, 3.0)
+				mon.GeometryKnown = true
 				m.Status = fmt.Sprintf("Scale: %.2f", mon.Scale)
 			}
 		case tea.MouseButtonWheelDown:
@@ -368,6 +370,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				mon := &m.Monitors[m.Selected]
 				delta := float32(0.05)
 				mon.Scale = clamp(mon.Scale-delta, 0.5, 3.0)
+				mon.GeometryKnown = true
 				m.Status = fmt.Sprintf("Scale: %.2f", mon.Scale)
 			}
 		}

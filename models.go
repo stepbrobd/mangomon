@@ -36,6 +36,11 @@ type Monitor struct {
 	Transform     int     // 0-7 for rotation/flip
 
 	// Mirror settings
+	// GeometryKnown records whether Scale, X and Y came from the compositor
+	// or a saved profile. wlr-randr omits both for a disabled head, so a
+	// false value means the defaults below are placeholders
+	GeometryKnown bool `json:"-"`
+
 	IsMirrored    bool     // Whether this monitor is mirroring another
 	MirrorSource  string   // Name of monitor being mirrored (empty if not mirroring)
 	MirrorTargets []string // Names of monitors mirroring this one
@@ -251,6 +256,7 @@ func (m *model) dragMove(msg tea.MouseMsg) {
 
 	mon.X = newX
 	mon.Y = newY
+	mon.GeometryKnown = true
 }
 
 func (m *model) endDrag() {
@@ -272,6 +278,7 @@ func (m *model) moveSelected(dx, dy int32) {
 	mon := &m.Monitors[m.Selected]
 	mon.X += dx
 	mon.Y += dy
+	mon.GeometryKnown = true
 	if m.Snap != SnapOff {
 		mon.X, mon.Y, m.Guides = m.snapPosition(mon, mon.X, mon.Y)
 	} else {
