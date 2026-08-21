@@ -33,6 +33,16 @@ const (
 	worldPaddingPx      = 500
 	desktopBorderMargin = 3
 	desktopFooterHeight = 10
+
+	// a tunnelled DP head can accept a modeset and drop the link seconds
+	// later, so an applied layout counts only once it has held
+	applyPollInterval  = 500 * time.Millisecond
+	applyHoldTime      = 3 * time.Second
+	applyVerifyTimeout = 12 * time.Second
+
+	// a head dropped by a failed apply needs seconds to return to the wire
+	restoreRetryInterval = 1 * time.Second
+	restoreTimeout       = 45 * time.Second
 )
 
 // parseMode accepts the "WxH@Hz" form shared by hyprland, wlr-randr, and the
@@ -404,10 +414,180 @@ func applyArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
 	return args, nil
 }
 
+func indexOutputs(live []wlrOutput) map[string]wlrOutput {
+	byName := make(map[string]wlrOutput, len(live))
+	for _, o := range live {
+		byName[o.Name] = o
+	}
+	return byName
+}
+
+// currentMode returns the active mode of out in the form applyArgs emits, or
+// the empty string when the head reports no current mode.
+func currentMode(out wlrOutput) string {
+	for _, m := range out.Modes {
+		if m.Current {
+			v := mhz(m.Refresh)
+			return fmt.Sprintf("%dx%d@%d.%03d", m.Width, m.Height, v/1000, v%1000)
+		}
+	}
+	return ""
+}
+
+// verifyOutputs reports whether live matches what want asked for. Power state
+// and mode are checked, position and scale are not. A misplaced monitor is
+// visible and correctable, a dark one is not.
+func verifyOutputs(want []Monitor, live []wlrOutput) error {
+	byName := indexOutputs(live)
+
+	for _, m := range want {
+		out, ok := byName[m.Name]
+		if !ok {
+			return fmt.Errorf("output %q is no longer present", m.Name)
+		}
+
+		if !m.Active {
+			if out.Enabled {
+				return fmt.Errorf("output %q should be off but is enabled", m.Name)
+			}
+			continue
+		}
+		if !out.Enabled {
+			return fmt.Errorf("output %q is disabled after being turned on", m.Name)
+		}
+
+		// snapping keeps verification and applyArgs on the same advertised mode
+		wanted, err := snapMode(out.Modes, m.PxW, m.PxH, m.Hz)
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", m.Name, err)
+		}
+		got := currentMode(out)
+		if got == "" {
+			return fmt.Errorf("output %q is enabled with no current mode", m.Name)
+		}
+		if got != wanted {
+			return fmt.Errorf("output %q runs %s after being set to %s", m.Name, got, wanted)
+		}
+	}
+	return nil
+}
+
+// confirmApplied waits until the live outputs match want and have held that
+// way for applyHoldTime, and returns the last mismatch if they never do.
+func confirmApplied(want []Monitor) error {
+	deadline := time.Now().Add(applyVerifyTimeout)
+	var heldSince time.Time
+	var last error
+
+	for {
+		live, err := readOutputs()
+		switch {
+		case err != nil:
+			last = err
+			heldSince = time.Time{}
+		default:
+			last = verifyOutputs(want, live)
+			if last != nil {
+				heldSince = time.Time{}
+				break
+			}
+			if heldSince.IsZero() {
+				heldSince = time.Now()
+			}
+			if time.Since(heldSince) >= applyHoldTime {
+				return nil
+			}
+		}
+
+		if !time.Now().Before(deadline) {
+			return last
+		}
+		time.Sleep(applyPollInterval)
+	}
+}
+
+// missingOutputs names the heads of want that live does not carry. wlr-randr
+// rejects a whole invocation that names an unknown output, so a restore waits
+// for dropped heads instead of addressing them.
+func missingOutputs(want []Monitor, live []wlrOutput) []string {
+	byName := indexOutputs(live)
+	var missing []string
+	for _, m := range want {
+		if _, ok := byName[m.Name]; !ok {
+			missing = append(missing, m.Name)
+		}
+	}
+	return missing
+}
+
+// presentOutputs is want restricted to the heads live carries.
+func presentOutputs(want []Monitor, live []wlrOutput) []Monitor {
+	byName := indexOutputs(live)
+	kept := make([]Monitor, 0, len(want))
+	for _, m := range want {
+		if _, ok := byName[m.Name]; ok {
+			kept = append(kept, m)
+		}
+	}
+	return kept
+}
+
+// restoreLayout puts previous back after a failed apply. Heads recovered on an
+// earlier pass stay up while the rest are still returning to the wire.
+func restoreLayout(previous []Monitor) {
+	deadline := time.Now().Add(restoreTimeout)
+	for {
+		err := restoreOnce(previous)
+		if err == nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			fmt.Fprintf(os.Stderr, "warning: could not restore the previous layout: %v\n", err)
+			return
+		}
+		time.Sleep(restoreRetryInterval)
+	}
+}
+
+func restoreOnce(previous []Monitor) error {
+	live, err := readOutputs()
+	if err != nil {
+		return err
+	}
+
+	missing := missingOutputs(previous, live)
+	present := presentOutputs(previous, live)
+	if len(present) == 0 {
+		return fmt.Errorf("waiting for %s", strings.Join(missing, ", "))
+	}
+
+	args, err := applyArgs(present, live)
+	if err != nil {
+		return err
+	}
+	if len(args) > 0 {
+		if _, err := execWlrRandr(args...); err != nil {
+			return err
+		}
+		time.Sleep(applyPollInterval)
+	}
+
+	settled, err := readOutputs()
+	if err != nil {
+		return err
+	}
+	if err := verifyOutputs(present, settled); err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("waiting for %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func applyMonitors(monitors []Monitor) error {
-	// re-read live outputs for exact mode snapping; the wanted mode in a
-	// profile is float Hz but wlr-randr keys modes by exact millihertz, and
-	// the available set may shift between save and apply
+	// the wanted mode is float Hz while wlr-randr keys modes by exact
+	// millihertz, so snapping needs the live mode list
 	live, err := readOutputs()
 	if err != nil {
 		return fmt.Errorf("list outputs before apply: %w", err)
@@ -420,6 +600,12 @@ func applyMonitors(monitors []Monitor) error {
 	if len(args) > 0 {
 		if _, err := execWlrRandr(args...); err != nil {
 			return fmt.Errorf("apply output configuration: %w", err)
+		}
+		// a zero exit status means the compositor accepted the request, not
+		// that the heads came up
+		if err := confirmApplied(monitors); err != nil {
+			restoreLayout(outputsToMonitors(live))
+			return fmt.Errorf("configuration did not take effect: %w", err)
 		}
 	}
 

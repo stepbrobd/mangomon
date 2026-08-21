@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -431,4 +432,142 @@ func TestParseMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVerifyOutputs(t *testing.T) {
+	live := func(mut ...func(*[]wlrOutput)) []wlrOutput {
+		out := []wlrOutput{
+			{
+				Name:    "DP-1",
+				Enabled: true,
+				Modes: []wlrMode{
+					{Width: 2560, Height: 1440, Refresh: 480.167999, Preferred: true},
+					{Width: 2560, Height: 1440, Refresh: 240.082993, Current: true},
+				},
+			},
+			{
+				Name:    "DP-2",
+				Enabled: true,
+				Modes: []wlrMode{
+					{Width: 2560, Height: 1440, Refresh: 59.951000, Current: true},
+					{Width: 2560, Height: 1440, Refresh: 299.993011, Preferred: true},
+				},
+			},
+		}
+		for _, m := range mut {
+			m(&out)
+		}
+		return out
+	}
+
+	want := []Monitor{
+		{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1},
+		{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 59.951, Scale: 1},
+	}
+
+	t.Run("live matches want", func(t *testing.T) {
+		if err := verifyOutputs(want, live()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("head went dark after the commit", func(t *testing.T) {
+		err := verifyOutputs(want, live(func(o *[]wlrOutput) { (*o)[0].Enabled = false }))
+		if err == nil {
+			t.Fatal("a blanked output must not verify")
+		}
+		if !strings.Contains(err.Error(), "DP-1") {
+			t.Errorf("error must name the output, got %q", err)
+		}
+	})
+
+	t.Run("head fell back to another mode", func(t *testing.T) {
+		asked480 := []Monitor{
+			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 480.168, Scale: 1},
+			want[1],
+		}
+		err := verifyOutputs(asked480, live())
+		if err == nil {
+			t.Fatal("a silent mode fallback must not verify")
+		}
+		if !strings.Contains(err.Error(), "DP-1") {
+			t.Errorf("error must name the output, got %q", err)
+		}
+	})
+
+	t.Run("head refused to turn off", func(t *testing.T) {
+		off := []Monitor{{Name: "DP-1", Active: false}, want[1]}
+		if err := verifyOutputs(off, live()); err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+
+	t.Run("head turned off as asked", func(t *testing.T) {
+		off := []Monitor{{Name: "DP-1", Active: false}, want[1]}
+		err := verifyOutputs(off, live(func(o *[]wlrOutput) {
+			(*o)[0].Enabled = false
+			(*o)[0].Modes[1].Current = false
+		}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("head left the live set", func(t *testing.T) {
+		err := verifyOutputs(want, live()[:1])
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !strings.Contains(err.Error(), "DP-2") {
+			t.Errorf("error must name the output, got %q", err)
+		}
+	})
+
+	t.Run("enabled head reports no current mode", func(t *testing.T) {
+		err := verifyOutputs(want, live(func(o *[]wlrOutput) { (*o)[0].Modes[1].Current = false }))
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+}
+
+func TestRestoreSelection(t *testing.T) {
+	previous := []Monitor{
+		{Name: "DP-1", Active: true, Hz: 240.083},
+		{Name: "DP-2", Active: true, Hz: 59.951},
+		{Name: "eDP-1", Active: false},
+	}
+
+	t.Run("every head present", func(t *testing.T) {
+		live := []wlrOutput{{Name: "DP-1"}, {Name: "DP-2"}, {Name: "eDP-1"}}
+		if got := missingOutputs(previous, live); got != nil {
+			t.Errorf("missingOutputs = %v, want none", got)
+		}
+		if got := presentOutputs(previous, live); len(got) != 3 {
+			t.Errorf("presentOutputs kept %d, want 3", len(got))
+		}
+	})
+
+	t.Run("one head dropped off the wire", func(t *testing.T) {
+		live := []wlrOutput{{Name: "eDP-1"}, {Name: "DP-1"}}
+		if got := missingOutputs(previous, live); !reflect.DeepEqual(got, []string{"DP-2"}) {
+			t.Errorf("missingOutputs = %v, want [DP-2]", got)
+		}
+		got := presentOutputs(previous, live)
+		if len(got) != 2 || got[0].Name != "DP-1" || got[1].Name != "eDP-1" {
+			t.Fatalf("presentOutputs = %v, want DP-1 and eDP-1 in want order", got)
+		}
+		if got[0].Hz != 240.083 {
+			t.Errorf("selection dropped the wanted settings, Hz = %v", got[0].Hz)
+		}
+	})
+
+	t.Run("no heads at all", func(t *testing.T) {
+		if got := missingOutputs(previous, nil); len(got) != 3 {
+			t.Errorf("missingOutputs = %v, want all three", got)
+		}
+		if got := presentOutputs(previous, nil); len(got) != 0 {
+			t.Errorf("presentOutputs = %v, want empty", got)
+		}
+	})
 }
