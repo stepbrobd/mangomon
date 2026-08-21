@@ -717,3 +717,41 @@ func TestRollbackWithoutAnApply(t *testing.T) {
 		t.Fatal("rollback before any apply must fail")
 	}
 }
+
+// TestConcurrentApplyRejected keeps a second apply from racing the recovery of
+// the first, which would build on the state being undone.
+func TestConcurrentApplyRejected(t *testing.T) {
+	f := newFakeCompositor()
+	withFakeCompositor(t, f)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	inner := execWlrRandr
+	execWlrRandr = func(args ...string) ([]byte, error) {
+		if len(args) > 1 {
+			select {
+			case entered <- struct{}{}:
+				<-release
+			default:
+			}
+		}
+		return inner(args...)
+	}
+
+	next := []Monitor{{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 120, Scale: 1}}
+	done := make(chan error, 1)
+	go func() { done <- applyMonitors(next) }()
+
+	<-entered
+	if err := applyMonitors(next); err == nil {
+		t.Error("a second apply must be rejected while one is running")
+	}
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if err := applyMonitors(next); err != nil {
+		t.Errorf("apply after the first finished: %v", err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -595,6 +596,13 @@ func applyMonitors(monitors []Monitor) error {
 // heads do not come up. record is false while undoing an apply so the layout
 // being undone does not become the next rollback target.
 func applyLayout(monitors []Monitor, record bool) error {
+	// a failing apply spends up to restoreTimeout recovering, long enough for
+	// the TUI to hand over a second layout built on the state being undone
+	if !applying.TryLock() {
+		return errors.New("an apply is already in progress")
+	}
+	defer applying.Unlock()
+
 	// the wanted mode is float Hz while wlr-randr keys modes by exact
 	// millihertz, so snapping needs the live mode list
 	live, err := readOutputs()
@@ -658,7 +666,10 @@ func getAvailableModes(monitorName string) ([]string, error) {
 }
 
 // rollbackLayout is the head state observed before the most recent apply
-var rollbackLayout []Monitor
+var (
+	rollbackLayout []Monitor
+	applying       sync.Mutex
+)
 
 func rollback() error {
 	if rollbackLayout == nil {
