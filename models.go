@@ -25,7 +25,10 @@ type Monitor struct {
 	Y          int32
 	Active     bool
 	EDIDName   string
-	Modes      []Mode
+
+	// Modes is read from the compositor on every load, so persisting it in a
+	// profile only stores a list that goes stale
+	Modes []Mode `json:"-"`
 
 	// Advanced display settings
 	BitDepth      uint8   // 8 or 10

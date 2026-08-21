@@ -887,3 +887,31 @@ func TestResolveProfileMonitorsNamesAbsent(t *testing.T) {
 		t.Errorf("absent = %v, want none when every monitor is connected", absent)
 	}
 }
+
+// TestProfileOmitsModes keeps advertised mode lists out of stored profiles,
+// where they only go stale against the hardware actually attached.
+func TestProfileOmitsModes(t *testing.T) {
+	m := Monitor{
+		Name: "DP-1", PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1, Active: true,
+		Modes: []Mode{{W: 2560, H: 1440, Hz: 480.168}, {W: 3840, H: 2160, Hz: 60}},
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "Modes") {
+		t.Errorf("profile json carries a mode list: %s", data)
+	}
+
+	var back Monitor
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Hz != m.Hz || back.PxW != m.PxW || back.Scale != m.Scale {
+		t.Errorf("round trip lost settings, got %+v", back)
+	}
+	if back.Modes != nil {
+		t.Errorf("Modes = %v, want nil", back.Modes)
+	}
+}
