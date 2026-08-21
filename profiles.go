@@ -72,10 +72,38 @@ func saveProfile(name string, monitors []Monitor) error {
 		return fmt.Errorf("failed to marshal profile: %w", err)
 	}
 
-	if err := os.WriteFile(filename, data, profileFileMode); err != nil {
+	if err := writeFileAtomic(filename, data); err != nil {
 		return fmt.Errorf("failed to write profile file: %w", err)
 	}
 	return nil
+}
+
+// writeFileAtomic replaces path in one rename so an interrupted write leaves
+// the previous contents rather than a truncated file. The temporary file
+// shares a directory with path to keep the rename on one filesystem.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+
+	if err := tmp.Chmod(profileFileMode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // keepStoredGeometry fills scale and position from stored for heads whose
@@ -197,7 +225,7 @@ func saveProfileOrder(order []string) error {
 		return fmt.Errorf("failed to marshal profile order: %w", err)
 	}
 
-	if err := os.WriteFile(filename, data, profileFileMode); err != nil {
+	if err := writeFileAtomic(filename, data); err != nil {
 		return fmt.Errorf("failed to write profile order: %w", err)
 	}
 	return nil

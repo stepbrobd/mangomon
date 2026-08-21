@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -822,5 +824,41 @@ func TestOutputsToMonitorsMarksGeometry(t *testing.T) {
 	}
 	if byName["eDP-1"].Scale != 1.0 {
 		t.Errorf("placeholder scale = %v, want 1.0 to keep the world math finite", byName["eDP-1"].Scale)
+	}
+}
+
+func TestWriteFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Home.json")
+
+	if err := writeFileAtomic(path, []byte("first")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := writeFileAtomic(path, []byte("second")); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "second" {
+		t.Errorf("contents = %q, want %q", got, "second")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != profileFileMode {
+		t.Errorf("mode = %v, want %v", info.Mode().Perm(), os.FileMode(profileFileMode))
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("%d files left behind, want only the target", len(entries))
 	}
 }
