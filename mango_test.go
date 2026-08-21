@@ -915,3 +915,43 @@ func TestProfileOmitsModes(t *testing.T) {
 		t.Errorf("Modes = %v, want nil", back.Modes)
 	}
 }
+
+func TestSameMonitorSet(t *testing.T) {
+	a := []Monitor{
+		{Name: "DP-1", HardwareID: "LG/ULTRAGEAR+/601"},
+		{Name: "eDP-1", HardwareID: "BOE/NE135"},
+	}
+
+	t.Run("same displays configured differently", func(t *testing.T) {
+		b := []Monitor{
+			{Name: "eDP-1", HardwareID: "BOE/NE135", Scale: 1.5, X: 320, Active: false},
+			{Name: "DP-1", HardwareID: "LG/ULTRAGEAR+/601", Hz: 480.168, Active: true},
+		}
+		if !sameMonitorSet(a, b) {
+			t.Error("configuration must not affect the comparison")
+		}
+	})
+
+	t.Run("different displays", func(t *testing.T) {
+		b := []Monitor{
+			{Name: "DP-1", HardwareID: "LG/ULTRAGEAR+/601"},
+			{Name: "DP-2", HardwareID: "LG/ULTRAGEAR/508"},
+		}
+		if sameMonitorSet(a, b) {
+			t.Error("a different display set must not match")
+		}
+	})
+
+	t.Run("different sizes", func(t *testing.T) {
+		if sameMonitorSet(a, a[:1]) {
+			t.Error("a subset must not match")
+		}
+	})
+
+	t.Run("name fallback for profiles without hardware ids", func(t *testing.T) {
+		legacy := []Monitor{{Name: "DP-1"}, {Name: "eDP-1"}}
+		if sameMonitorSet(legacy, []Monitor{{Name: "eDP-1"}, {Name: "DP-1"}}) != true {
+			t.Error("legacy profiles must match on name")
+		}
+	})
+}

@@ -246,7 +246,7 @@ func readMonitors() ([]Monitor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return outputsToMonitors(outputs), nil
+	return seedUnknownGeometry(outputsToMonitors(outputs)), nil
 }
 
 // outputsToMonitors converts the parsed wlr-randr shape into the slice the

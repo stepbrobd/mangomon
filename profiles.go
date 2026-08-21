@@ -106,6 +106,65 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// sameMonitorSet reports whether both sides describe the same displays,
+// ignoring how each one is configured.
+func sameMonitorSet(a, b []Monitor) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	key := func(m Monitor) string {
+		if m.HardwareID != "" {
+			return m.HardwareID
+		}
+		return m.Name
+	}
+
+	count := make(map[string]int, len(a))
+	for _, m := range a {
+		count[key(m)]++
+	}
+	for _, m := range b {
+		count[key(m)]--
+	}
+	for _, n := range count {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// seedUnknownGeometry fills scale and position for heads the compositor did not
+// report, from the stored profile covering exactly the connected displays.
+// Without it an inactive monitor is drawn at the origin at scale 1 rather than
+// where its profile puts it.
+func seedUnknownGeometry(monitors []Monitor) []Monitor {
+	complete := true
+	for _, m := range monitors {
+		if !m.GeometryKnown {
+			complete = false
+			break
+		}
+	}
+	if complete {
+		return monitors
+	}
+
+	names, err := listProfiles()
+	if err != nil {
+		return monitors
+	}
+	for _, name := range names {
+		profile, err := loadProfile(name)
+		if err != nil || !sameMonitorSet(monitors, profile.Monitors) {
+			continue
+		}
+		return keepStoredGeometry(monitors, profile.Monitors)
+	}
+	return monitors
+}
+
 // keepStoredGeometry fills scale and position from stored for heads whose
 // geometry the compositor did not report, so saving a layout while a monitor
 // is off does not overwrite what the profile already knows about it.
