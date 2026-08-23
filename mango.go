@@ -416,6 +416,110 @@ func applyArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
 	return args, nil
 }
 
+// pixelRate approximates the link bandwidth a mode needs. Blanking intervals
+// and DSC are ignored because a rate is only ever compared against another
+// rate on the same head, to tell a change that gives capacity back from one
+// that takes capacity
+func pixelRate(w, h int, hz float64) float64 {
+	return float64(w) * float64(h) * hz
+}
+
+// targetRate is the rate m asks for, zero when m is to be turned off
+func targetRate(m Monitor) float64 {
+	if !m.Active {
+		return 0
+	}
+	return pixelRate(int(m.PxW), int(m.PxH), float64(m.Hz))
+}
+
+// liveRate is the rate out currently runs at, zero when it is off
+func liveRate(out wlrOutput) float64 {
+	if !out.Enabled {
+		return 0
+	}
+	for _, mode := range out.Modes {
+		if mode.Current {
+			return pixelRate(mode.Width, mode.Height, mode.Refresh)
+		}
+	}
+	return 0
+}
+
+// rateEpsilon absorbs the float32 Hz on a Monitor meeting the float64 refresh
+// of a mode list, which leaves an unchanged head a few ulps apart instead of
+// equal. It sits far below the gap between any two advertised modes
+const rateEpsilon = 1e-6
+
+// partitionApply splits monitors into the heads that give capacity back and
+// the heads that take it. Unchanged, downgraded, and switched-off heads
+// release; enabled and raised heads claim. A head live does not carry claims,
+// so applyArgs reports it the way it always has
+func partitionApply(monitors []Monitor, live []wlrOutput) (release, claim []Monitor) {
+	byName := indexOutputs(live)
+	for _, m := range monitors {
+		if out, ok := byName[m.Name]; ok && targetRate(m) <= liveRate(out)*(1+rateEpsilon) {
+			release = append(release, m)
+			continue
+		}
+		claim = append(claim, m)
+	}
+	return release, claim
+}
+
+// settlePhase waits until the heads applied by a phase actually carry that
+// state and the heads next names are back on the wire. wlr-randr snapshots
+// head state when it connects, so a following invocation issued too early
+// resends the state the previous phase just replaced. Disabling a tunnelled DP
+// head also drops it from the compositor for seconds, and wlr-randr rejects a
+// whole invocation that names a head it cannot see
+func settlePhase(applied, next []Monitor) ([]wlrOutput, error) {
+	deadline := time.Now().Add(applyVerifyTimeout)
+	for {
+		live, err := readOutputs()
+		if err == nil {
+			if err = verifyOutputs(applied, live); err == nil {
+				missing := missingOutputs(next, live)
+				if len(missing) == 0 {
+					return live, nil
+				}
+				err = fmt.Errorf("waiting for %s", strings.Join(missing, ", "))
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return nil, err
+		}
+		time.Sleep(applyPollInterval)
+	}
+}
+
+// releaseArgs builds the first phase of a split apply. It carries power state
+// and mode only, because that is all that frees capacity, and because moving a
+// head in this phase makes mango reflow the layout and displace the heads the
+// second phase has not reached yet
+func releaseArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
+	byName := indexOutputs(live)
+
+	var args []string
+	for _, m := range monitors {
+		out, ok := byName[m.Name]
+		if !ok {
+			return nil, fmt.Errorf("output %q is not currently connected", m.Name)
+		}
+
+		if !m.Active {
+			args = append(args, "--output", m.Name, "--off")
+			continue
+		}
+
+		modeStr, err := snapMode(out.Modes, m.PxW, m.PxH, m.Hz)
+		if err != nil {
+			return nil, fmt.Errorf("snap mode for %s: %w", m.Name, err)
+		}
+		args = append(args, "--output", m.Name, "--on", "--mode", modeStr)
+	}
+	return args, nil
+}
+
 func indexOutputs(live []wlrOutput) map[string]wlrOutput {
 	byName := make(map[string]wlrOutput, len(live))
 	for _, o := range live {
@@ -609,20 +713,55 @@ func applyLayout(monitors []Monitor, record bool) error {
 		return fmt.Errorf("list outputs before apply: %w", err)
 	}
 
-	args, err := applyArgs(monitors, live)
-	if err != nil {
-		return err
-	}
-
 	previous := outputsToMonitors(live)
 	if record {
 		rollbackLayout = previous
 	}
 
+	// mango commits the heads of one configuration separately, in an order it
+	// picks, so a single invocation can raise one head before lowering another
+	// and exceed a limit the target layout itself respects (a shared DP tunnel
+	// bandwidth budget, a joiner pipe pair). Giving capacity back in its own
+	// invocation puts that ordering where the compositor cannot reorder it
+	release, claim := partitionApply(monitors, live)
+	applied := false
+
+	if len(release) > 0 && len(claim) > 0 {
+		args, err := releaseArgs(release, live)
+		if err != nil {
+			return err
+		}
+		if len(args) > 0 {
+			if _, err := execWlrRandr(args...); err != nil {
+				return fmt.Errorf("apply output configuration: %w", err)
+			}
+			applied = true
+
+			settled, err := settlePhase(release, monitors)
+			if err != nil {
+				restoreLayout(previous)
+				return fmt.Errorf("settle between apply phases: %w", err)
+			}
+			live = settled
+		}
+	}
+
+	args, err := applyArgs(monitors, live)
+	if err != nil {
+		return err
+	}
 	if len(args) > 0 {
 		if _, err := execWlrRandr(args...); err != nil {
+			// an earlier phase already moved the layout off what the user had
+			if applied {
+				restoreLayout(previous)
+			}
 			return fmt.Errorf("apply output configuration: %w", err)
 		}
+		applied = true
+	}
+
+	if applied {
 		// a zero exit status means the compositor accepted the request, not
 		// that the heads came up
 		if err := confirmApplied(monitors); err != nil {

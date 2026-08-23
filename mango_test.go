@@ -955,3 +955,111 @@ func TestSameMonitorSet(t *testing.T) {
 		}
 	})
 }
+
+// TestPartitionApply pins the ordering that keeps a profile applyable on a
+// compositor that commits the heads of one configuration separately. The
+// numbers mirror the Framework dual-LG setup, where DP-1 at 480Hz and DP-2 at
+// its preferred 300Hz do not fit in one shared DP tunnel budget together
+func TestPartitionApply(t *testing.T) {
+	live := []wlrOutput{
+		{
+			Name:    "DP-1",
+			Enabled: true,
+			Modes: []wlrMode{
+				{Width: 2560, Height: 1440, Refresh: 480.167999, Preferred: true},
+				{Width: 2560, Height: 1440, Refresh: 240.082993, Current: true},
+			},
+		},
+		{
+			Name:    "DP-2",
+			Enabled: true,
+			Modes: []wlrMode{
+				{Width: 2560, Height: 1440, Refresh: 299.993011, Preferred: true, Current: true},
+				{Width: 2560, Height: 1440, Refresh: 59.951000},
+			},
+		},
+		{
+			Name:    "eDP-1",
+			Enabled: true,
+			Modes: []wlrMode{
+				{Width: 2880, Height: 1920, Refresh: 120.000000, Preferred: true, Current: true},
+			},
+		},
+	}
+
+	names := func(ms []Monitor) []string {
+		out := make([]string, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, m.Name)
+		}
+		return out
+	}
+
+	t.Run("a raised head waits for the heads that free capacity", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 480.168, Scale: 1},
+			{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 59.951, Scale: 1},
+			{Name: "eDP-1", Active: false},
+		}
+		release, claim := partitionApply(monitors, live)
+		if got, want := names(release), []string{"DP-2", "eDP-1"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("release = %v, want %v", got, want)
+		}
+		if got, want := names(claim), []string{"DP-1"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("claim = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("an unchanged layout claims nothing so it stays one invocation", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1},
+			{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 299.993, Scale: 1},
+		}
+		release, claim := partitionApply(monitors, live)
+		if got, want := names(release), []string{"DP-1", "DP-2"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("release = %v, want %v", got, want)
+		}
+		if len(claim) != 0 {
+			t.Errorf("claim = %v, want empty", names(claim))
+		}
+	})
+
+	t.Run("only raises means nothing to release", func(t *testing.T) {
+		monitors := []Monitor{
+			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 480.168, Scale: 1},
+		}
+		release, claim := partitionApply(monitors, live)
+		if len(release) != 0 {
+			t.Errorf("release = %v, want empty", names(release))
+		}
+		if got, want := names(claim), []string{"DP-1"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("claim = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a disabled head that comes on claims", func(t *testing.T) {
+		off := []wlrOutput{{Name: "DP-1", Enabled: false, Modes: live[0].Modes}}
+		monitors := []Monitor{{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1}}
+		release, claim := partitionApply(monitors, off)
+		if len(release) != 0 {
+			t.Errorf("release = %v, want empty", names(release))
+		}
+		if got, want := names(claim), []string{"DP-1"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("claim = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("an absent head claims so applyArgs still reports it", func(t *testing.T) {
+		monitors := []Monitor{{Name: "DP-9", Active: true, PxW: 1920, PxH: 1080, Hz: 60, Scale: 1}}
+		release, claim := partitionApply(monitors, live)
+		if len(release) != 0 {
+			t.Errorf("release = %v, want empty", names(release))
+		}
+		if got, want := names(claim), []string{"DP-9"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("claim = %v, want %v", got, want)
+		}
+		if _, err := applyArgs(claim, live); err == nil {
+			t.Error("applyArgs should reject an output that is not connected")
+		}
+	})
+}
