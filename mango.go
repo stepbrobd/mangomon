@@ -371,9 +371,8 @@ func snapMode(modes []wlrMode, w, h uint32, wantedHz float32) (string, error) {
 
 // applyArgs builds the argument list for a single wlr-randr invocation
 // covering the whole monitor set. one invocation means one atomic
-// zwlr_output_configuration_v1: mango tests and commits every head together,
-// so a partially-applied layout cannot occur (an improvement over niri's
-// sequential per-property applies). pure so tests can pin the exact argv
+// zwlr_output_configuration_v1. mango commits each head separately, so the
+// observed state still needs to be checked after an apply.
 func applyArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
 	liveByName := make(map[string]wlrOutput, len(live))
 	for _, o := range live {
@@ -450,20 +449,29 @@ func liveRate(out wlrOutput) float64 {
 // equal. It sits far below the gap between any two advertised modes
 const rateEpsilon = 1e-6
 
-// partitionApply splits monitors into the heads that give capacity back and
-// the heads that take it. Unchanged, downgraded, and switched-off heads
-// release; enabled and raised heads claim. A head live does not carry claims,
-// so applyArgs reports it the way it always has
-func partitionApply(monitors []Monitor, live []wlrOutput) (release, claim []Monitor) {
+// partitionApply orders changes that affect shared display resources. A new
+// head gets its mode before an already enabled head can increase its rate.
+func partitionApply(monitors []Monitor, live []wlrOutput) (release, enable, raise []Monitor) {
 	byName := indexOutputs(live)
 	for _, m := range monitors {
-		if out, ok := byName[m.Name]; ok && targetRate(m) <= liveRate(out)*(1+rateEpsilon) {
+		out, ok := byName[m.Name]
+		switch {
+		case !ok:
+			raise = append(raise, m) // applyArgs reports the missing head
+		case !out.Enabled && m.Active:
+			enable = append(enable, m)
+		case out.Enabled && !m.Active:
 			release = append(release, m)
-			continue
+		case out.Enabled:
+			from, to := liveRate(out), targetRate(m)
+			if to < from*(1-rateEpsilon) {
+				release = append(release, m)
+			} else if to > from*(1+rateEpsilon) {
+				raise = append(raise, m)
+			}
 		}
-		claim = append(claim, m)
 	}
-	return release, claim
+	return release, enable, raise
 }
 
 // settlePhase waits until the heads applied by a phase actually carry that
@@ -492,11 +500,8 @@ func settlePhase(applied, next []Monitor) ([]wlrOutput, error) {
 	}
 }
 
-// releaseArgs builds the first phase of a split apply. It carries power state
-// and mode only, because that is all that frees capacity, and because moving a
-// head in this phase makes mango reflow the layout and displace the heads the
-// second phase has not reached yet
-func releaseArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
+// modeArgs changes power and mode without moving heads before the final apply.
+func modeArgs(monitors []Monitor, live []wlrOutput) ([]string, error) {
 	byName := indexOutputs(live)
 
 	var args []string
@@ -559,7 +564,7 @@ func verifyOutputs(want []Monitor, live []wlrOutput) error {
 			continue
 		}
 		if !out.Enabled {
-			return fmt.Errorf("output %q is disabled after being turned on", m.Name)
+			return fmt.Errorf("output %q did not stay enabled", m.Name)
 		}
 
 		// snapping keeps verification and applyArgs on the same advertised mode
@@ -698,7 +703,7 @@ func applyMonitors(monitors []Monitor) error {
 // applyLayout commits monitors and puts the observed layout back when the
 // heads do not come up. record is false while undoing an apply so the layout
 // being undone does not become the next rollback target.
-func applyLayout(monitors []Monitor, record bool) error {
+func applyLayout(monitors []Monitor, record bool) (applyErr error) {
 	// a failing apply spends up to restoreTimeout recovering, long enough for
 	// the TUI to hand over a second layout built on the state being undone
 	if !applying.TryLock() {
@@ -718,31 +723,36 @@ func applyLayout(monitors []Monitor, record bool) error {
 		rollbackLayout = previous
 	}
 
-	// mango commits the heads of one configuration separately, in an order it
-	// picks, so a single invocation can raise one head before lowering another
-	// and exceed a limit the target layout itself respects (a shared DP tunnel
-	// bandwidth budget, a joiner pipe pair). Giving capacity back in its own
-	// invocation puts that ordering where the compositor cannot reorder it
-	release, claim := partitionApply(monitors, live)
-	applied := false
+	// mango can partially commit a rejected configuration
+	attempted := false
+	defer func() {
+		if attempted && applyErr != nil {
+			restoreLayout(previous)
+		}
+	}()
 
-	if len(release) > 0 && len(claim) > 0 {
-		args, err := releaseArgs(release, live)
+	release, enable, raise := partitionApply(monitors, live)
+	if len(enable)+len(raise) == 0 {
+		release = nil
+	}
+	if len(raise) == 0 {
+		enable = nil
+	}
+	for _, phase := range [][]Monitor{release, enable} {
+		if len(phase) == 0 {
+			continue
+		}
+		args, err := modeArgs(phase, live)
 		if err != nil {
 			return err
 		}
-		if len(args) > 0 {
-			if _, err := execWlrRandr(args...); err != nil {
-				return fmt.Errorf("apply output configuration: %w", err)
-			}
-			applied = true
-
-			settled, err := settlePhase(release, monitors)
-			if err != nil {
-				restoreLayout(previous)
-				return fmt.Errorf("settle between apply phases: %w", err)
-			}
-			live = settled
+		attempted = true
+		if _, err := execWlrRandr(args...); err != nil {
+			return fmt.Errorf("apply output configuration: %w", err)
+		}
+		live, err = settlePhase(phase, monitors)
+		if err != nil {
+			return fmt.Errorf("settle between apply phases: %w", err)
 		}
 	}
 
@@ -751,21 +761,13 @@ func applyLayout(monitors []Monitor, record bool) error {
 		return err
 	}
 	if len(args) > 0 {
+		attempted = true
 		if _, err := execWlrRandr(args...); err != nil {
-			// an earlier phase already moved the layout off what the user had
-			if applied {
-				restoreLayout(previous)
-			}
 			return fmt.Errorf("apply output configuration: %w", err)
 		}
-		applied = true
-	}
-
-	if applied {
 		// a zero exit status means the compositor accepted the request, not
 		// that the heads came up
 		if err := confirmApplied(monitors); err != nil {
-			restoreLayout(previous)
 			return fmt.Errorf("configuration did not take effect: %w", err)
 		}
 	}

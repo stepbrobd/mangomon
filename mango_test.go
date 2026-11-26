@@ -691,6 +691,25 @@ func TestRollbackTargetsPreApplyState(t *testing.T) {
 	}
 }
 
+func TestApplyEnablesBeforeRaisingOtherOutputs(t *testing.T) {
+	f := newFakeCompositor()
+	withFakeCompositor(t, f)
+	execWlrRandr = func(args ...string) ([]byte, error) {
+		// mango may process the already enabled monitor first in a single request
+		if !f.enabled["DP-1"] && strings.Contains(strings.Join(args, " "), "--output DP-2 --on --mode 2560x1440@120.000") {
+			return nil, errors.New("raised DP-2 before enabling DP-1")
+		}
+		return f.exec(args...)
+	}
+
+	if err := applyMonitors([]Monitor{
+		{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 59.951, Scale: 1},
+		{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 120, Scale: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestRollbackDoesNotRetargetItself keeps a second revert from reapplying the
 // layout the first one undid.
 func TestRollbackDoesNotRetargetItself(t *testing.T) {
@@ -1001,7 +1020,7 @@ func TestPartitionApply(t *testing.T) {
 			{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 59.951, Scale: 1},
 			{Name: "eDP-1", Active: false},
 		}
-		release, claim := partitionApply(monitors, live)
+		release, _, claim := partitionApply(monitors, live)
 		if got, want := names(release), []string{"DP-2", "eDP-1"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("release = %v, want %v", got, want)
 		}
@@ -1015,9 +1034,9 @@ func TestPartitionApply(t *testing.T) {
 			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1},
 			{Name: "DP-2", Active: true, PxW: 2560, PxH: 1440, Hz: 299.993, Scale: 1},
 		}
-		release, claim := partitionApply(monitors, live)
-		if got, want := names(release), []string{"DP-1", "DP-2"}; !reflect.DeepEqual(got, want) {
-			t.Errorf("release = %v, want %v", got, want)
+		release, enable, claim := partitionApply(monitors, live)
+		if len(release)+len(enable) != 0 {
+			t.Errorf("unchanged heads must not need a separate phase: release %v, enable %v", names(release), names(enable))
 		}
 		if len(claim) != 0 {
 			t.Errorf("claim = %v, want empty", names(claim))
@@ -1028,7 +1047,7 @@ func TestPartitionApply(t *testing.T) {
 		monitors := []Monitor{
 			{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 480.168, Scale: 1},
 		}
-		release, claim := partitionApply(monitors, live)
+		release, _, claim := partitionApply(monitors, live)
 		if len(release) != 0 {
 			t.Errorf("release = %v, want empty", names(release))
 		}
@@ -1040,18 +1059,21 @@ func TestPartitionApply(t *testing.T) {
 	t.Run("a disabled head that comes on claims", func(t *testing.T) {
 		off := []wlrOutput{{Name: "DP-1", Enabled: false, Modes: live[0].Modes}}
 		monitors := []Monitor{{Name: "DP-1", Active: true, PxW: 2560, PxH: 1440, Hz: 240.083, Scale: 1}}
-		release, claim := partitionApply(monitors, off)
+		release, enable, raise := partitionApply(monitors, off)
 		if len(release) != 0 {
 			t.Errorf("release = %v, want empty", names(release))
 		}
-		if got, want := names(claim), []string{"DP-1"}; !reflect.DeepEqual(got, want) {
-			t.Errorf("claim = %v, want %v", got, want)
+		if got, want := names(enable), []string{"DP-1"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("enable = %v, want %v", got, want)
+		}
+		if len(raise) != 0 {
+			t.Errorf("raise = %v, want empty", names(raise))
 		}
 	})
 
 	t.Run("an absent head claims so applyArgs still reports it", func(t *testing.T) {
 		monitors := []Monitor{{Name: "DP-9", Active: true, PxW: 1920, PxH: 1080, Hz: 60, Scale: 1}}
-		release, claim := partitionApply(monitors, live)
+		release, _, claim := partitionApply(monitors, live)
 		if len(release) != 0 {
 			t.Errorf("release = %v, want empty", names(release))
 		}
