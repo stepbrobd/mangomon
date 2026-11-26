@@ -1,5 +1,6 @@
 { lib
 , buildGoApplication
+, go
 , nix-gitignore
 , makeWrapper
 , wl-mirror
@@ -13,6 +14,7 @@ buildGoApplication (lib.fix (finalAttrs: {
   src = nix-gitignore.gitignoreSource [ ] ./.;
 
   modules = ./gomod2nix.toml;
+  inherit go;
 
   ldflags = [
     "-s"

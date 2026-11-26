@@ -2,18 +2,26 @@
   outputs = inputs: inputs.parts.lib.mkFlake { inherit inputs; } {
     systems = import inputs.systems;
 
-    perSystem = { pkgs, system, ... }: {
-      _module.args.pkgs = import inputs.nixpkgs {
-        inherit system;
-        overlays = [ inputs.gomod2nix.overlays.default ];
+    perSystem = { pkgs, system, ... }:
+      let
+        go = pkgs.go_latest;
+        goTools = {
+          inherit go;
+          gomod2nix = pkgs.gomod2nix.override { inherit go; };
+        };
+      in
+      {
+        _module.args.pkgs = import inputs.nixpkgs {
+          inherit system;
+          overlays = [ inputs.gomod2nix.overlays.default ];
+        };
+
+        packages.default = pkgs.callPackage ./default.nix { inherit go; };
+
+        devShells.default = pkgs.callPackage ./shell.nix goTools;
+
+        formatter = pkgs.callPackage ./formatter.nix goTools;
       };
-
-      packages.default = pkgs.callPackage ./default.nix { };
-
-      devShells.default = pkgs.callPackage ./shell.nix { };
-
-      formatter = pkgs.callPackage ./formatter.nix { };
-    };
   };
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
