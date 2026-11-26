@@ -16,12 +16,9 @@ recommend. The profile JSON format is preserved, so existing nirimon or hyprmon
 profiles keep working if you copy `~/.config/nirimon` (or `~/.config/hyprmon`)
 to `~/.config/mangomon`.
 
-Note that mangomon does not write to your mango config file. Monitor application
-is one atomic `wlr-randr` invocation, which is runtime-temporary: a mango
-restart reverts outputs to whatever your `monitorrule` lines say. Persistence
-belongs to the profile json files in `~/.config/mangomon/profiles/`, applied at
-startup via `exec-once` (see the [Mango](#mango) section), or to `monitorrule`
-lines you write yourself.
+Mangomon applies layouts at runtime and does not write Mango's config file. A
+Mango restart reverts outputs to its monitor rules. Save a profile and apply it
+at startup with `exec-once` (see [Mango](#mango)) to restore your layout.
 
 ## Installation
 
@@ -109,6 +106,10 @@ mangomon profiles        # interactive menu
 VRR maps to the protocol's adaptive sync: on/off. The legacy hyprmon value
 "fullscreen-only" applies as on.
 
+If an output stays disabled, check `journalctl -k -b` for a DPTX timeout. This
+points to the Thunderbolt dock or link. Mangomon attempts to restore the
+previous layout on failure but cannot reset the tunnel.
+
 ### Mirroring
 
 Mango has no native output mirroring the way Hyprland does. mangomon keeps
@@ -118,10 +119,10 @@ applies the mirror by spawning
 another, mangomon launches `wl-mirror --fullscreen-output <target> <source>`,
 which captures the source output and shows it fullscreen on the target.
 
-wl-mirror must be on `PATH`. The Nix package wraps it in automatically; if you
-build from source, install wl-mirror yourself. When wl-mirror is missing the
-mirror picker still works and the choice is saved to the profile json, but it is
-not applied (the picker says so), so a profile stays portable to hyprmon.
+The Nix package includes wl-mirror. When building from source, install it
+separately. Without it, the mirror choice is still saved but is not applied.
+wl-mirror 0.18.5 requests fullscreen after mapping its window, so it can briefly
+open on the focused display before Mango moves it to the target.
 
 Because the mirror is an ordinary fullscreen Wayland window and not a
 compositor-level clone, it behaves differently from Hyprland's native mirror.
