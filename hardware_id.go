@@ -51,11 +51,9 @@ func disambiguateHardwareIDs(monitors []Monitor) {
 	}
 }
 
-// resolveProfileMonitors takes saved profile monitors and maps them to
-// currently connected monitors by HardwareID. Returns only monitors that
-// are currently connected, with their connector Name updated to the current value.
-// The second return value names the saved monitors that are not connected, so
-// callers can say what a partial apply left out.
+// resolveProfileMonitors matches saved monitors by hardware ID and updates
+// connector names, including mirror sources. The second result lists saved
+// monitors that are no longer connected.
 func resolveProfileMonitors(saved, current []Monitor) ([]Monitor, []string) {
 	currentByHWID := make(map[string]Monitor)
 	currentByName := make(map[string]Monitor)
@@ -66,6 +64,7 @@ func resolveProfileMonitors(saved, current []Monitor) ([]Monitor, []string) {
 		currentByName[m.Name] = m
 	}
 
+	resolvedNames := make(map[string]string, len(saved))
 	var resolved []Monitor
 	var absent []string
 	for _, savedMon := range saved {
@@ -86,6 +85,7 @@ func resolveProfileMonitors(saved, current []Monitor) ([]Monitor, []string) {
 
 		resolvedMon := savedMon
 		resolvedMon.Name = currentMon.Name
+		resolvedNames[savedMon.Name] = currentMon.Name
 		if resolvedMon.HardwareID == "" {
 			resolvedMon.HardwareID = currentMon.HardwareID
 		}
@@ -98,6 +98,9 @@ func resolveProfileMonitors(saved, current []Monitor) ([]Monitor, []string) {
 			resolvedMon.EDIDName = currentMon.EDIDName
 		}
 		resolved = append(resolved, resolvedMon)
+	}
+	for i := range resolved {
+		resolved[i].MirrorSource = resolvedNames[resolved[i].MirrorSource]
 	}
 
 	return resolved, absent

@@ -345,6 +345,29 @@ func TestResolveProfileMonitors(t *testing.T) {
 	}
 }
 
+func TestResolveProfileMirrorSource(t *testing.T) {
+	saved := []Monitor{
+		{Name: "DP-1", HardwareID: "source", Active: true},
+		{Name: "DP-2", HardwareID: "target", Active: true, IsMirrored: true, MirrorSource: "DP-1"},
+		{Name: "DP-3", HardwareID: "other", Active: true},
+	}
+	current := []Monitor{
+		{Name: "DP-3", HardwareID: "source"},
+		{Name: "DP-2", HardwareID: "target"},
+		{Name: "DP-1", HardwareID: "other"},
+	}
+
+	resolved, _ := resolveProfileMonitors(saved, current)
+	if got := desiredMirrors(resolved); len(got) != 1 || got[0] != (mirrorSpec{Target: "DP-2", Source: "DP-3"}) {
+		t.Fatalf("mirrors after port reassignment = %v, want DP-2 mirroring DP-3", got)
+	}
+
+	resolved, _ = resolveProfileMonitors(saved, current[1:])
+	if got := desiredMirrors(resolved); len(got) != 0 {
+		t.Fatalf("mirrors without the saved source = %v, want none", got)
+	}
+}
+
 func TestMigrateProfileMonitors(t *testing.T) {
 	current := []Monitor{
 		{Name: "DP-3", HardwareID: "Dell Inc./DELL U3419W/5HJB6T2", Make: "Dell Inc.", Model: "DELL U3419W", Serial: "5HJB6T2"},
